@@ -1,0 +1,1 @@
+"""SpaceWise user interface."""
