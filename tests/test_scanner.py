@@ -3,7 +3,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from core.scanner import DriveUsage, ScanCancelledError, scan_folder, scan_folders
+from core.scanner import DriveUsage, ScanCancelledError, ScanProgress, scan_folder, scan_folders
 
 
 class ScanFolderTests(unittest.TestCase):
@@ -91,7 +91,7 @@ class ScanFolderTests(unittest.TestCase):
             child = root / "Documents"
             child.mkdir()
             (child / "report.txt").write_bytes(b"report")
-            messages: list[str] = []
+            messages: list[ScanProgress] = []
 
             result = scan_folders(
                 (root, child),
@@ -104,7 +104,9 @@ class ScanFolderTests(unittest.TestCase):
         self.assertEqual(len(result.files), 1)
         self.assertEqual(result.total_size, 6)
         self.assertTrue(messages)
-        self.assertIn("file(s) found", messages[-1])
+        self.assertEqual(messages[-1].files_scanned, len(result.files))
+        self.assertGreaterEqual(messages[-1].elapsed_seconds, 0)
+        self.assertFalse(any(hasattr(message, "path") for message in messages))
 
     def test_drive_metadata_is_separate_from_scanned_file_size(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

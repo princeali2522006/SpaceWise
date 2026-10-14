@@ -4,14 +4,15 @@ import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
 from core.discovery import LocalDrive
+from core.duplicates import DuplicateAnalysis, UnverifiedFile
 from core.scanner import DriveUsage, ScanCancelledError, scan_folder
+from ui.duplicates_page import DuplicatesPage
 from ui.main_window import MainWindow
 
 
@@ -126,6 +127,83 @@ class ScanModeTests(unittest.TestCase):
         self.assertEqual(window.explorer.files, previous_result.files)
         self.assertIn("cancelled", window.dashboard.scan_status_label.text().casefold())
         window.close()
+
+    def test_duplicate_analysis_uses_latest_result_and_is_invalidated_by_new_scan(self) -> None:
+        first = self.root / "duplicate-a.bin"
+        second = self.root / "duplicate-b.bin"
+        first.write_bytes(b"identical content")
+        second.write_bytes(b"identical content")
+        window = MainWindow()
+        result = scan_folder(self.root)
+        window._scan_completed(result)
+
+        window.find_duplicates(False)
+        worker = window.duplicate_worker
+        self.assertIsNotNone(worker)
+        worker.wait()
+        for _ in range(10):
+            self.app.processEvents()
+
+        analysis = window.duplicates.analysis
+        self.assertEqual(len(analysis.groups), 1)
+        self.assertEqual(set(analysis.groups[0].paths), {str(first), str(second)})
+        self.assertEqual(
+            analysis.potential_recoverable_bytes,
+            len(b"identical content"),
+        )
+        self.assertIsNone(window.duplicate_worker)
+
+        window._scan_completed(scan_folder(self.root))
+        self.assertIsNone(window.duplicates.analysis)
+        window.close()
+
+    def test_duplicate_analysis_can_be_limited_to_known_personal_roots(self) -> None:
+        personal = self.root / "personal"
+        personal.mkdir()
+        personal_first = personal / "one.bin"
+        personal_second = personal / "two.bin"
+        outside = self.root / "outside.bin"
+        personal_first.write_bytes(b"same bytes")
+        personal_second.write_bytes(b"same bytes")
+        outside.write_bytes(b"same bytes")
+        window = MainWindow()
+        window._scan_completed(scan_folder(self.root))
+
+        with patch("ui.main_window.discover_user_folders", return_value=(str(personal),)):
+            window.find_duplicates(True)
+        worker = window.duplicate_worker
+        self.assertIsNotNone(worker)
+        worker.wait()
+        for _ in range(10):
+            self.app.processEvents()
+
+        analysis = window.duplicates.analysis
+        self.assertEqual(len(analysis.groups), 1)
+        self.assertEqual(
+            set(analysis.groups[0].paths),
+            {str(personal_first), str(personal_second)},
+        )
+        self.assertNotIn(str(outside), analysis.groups[0].paths)
+        window.close()
+
+    def test_duplicate_page_shows_unverified_paths_and_reasons(self) -> None:
+        page = DuplicatesPage()
+        page.set_result(
+            DuplicateAnalysis(
+                groups=(),
+                unverified_files=(
+                    UnverifiedFile(str(self.root / "changed.bin"), "File changed during hashing."),
+                ),
+                candidate_files=2,
+                hashed_files=1,
+                elapsed_seconds=0.5,
+            )
+        )
+
+        self.assertEqual(page.groups_table.rowCount(), 1)
+        self.assertEqual(page.groups_table.item(0, 0).text(), "Unverified")
+        self.assertIn(str(self.root / "changed.bin"), page.groups_table.item(0, 4).text())
+        self.assertIn("File changed during hashing", page.groups_table.item(0, 4).text())
 
 
 if __name__ == "__main__":

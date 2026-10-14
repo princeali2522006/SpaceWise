@@ -17,12 +17,16 @@ from PySide6.QtWidgets import (
 )
 
 from core.discovery import discover_local_drives, discover_user_folders, refresh_drive_usage
-from core.scanner import DriveUsage, ScanResult
+from core.duplicates import DuplicateAnalysis, DuplicateProgress
+from core.recommendations import CleanupRecommendations, RecommendationProgress
+from core.scanner import DriveUsage, ScanProgress, ScanResult
+from ui.cleanup_page import CleanupPage
 from ui.dashboard_page import DashboardPage
+from ui.duplicates_page import DuplicatesPage
 from ui.explorer_page import ExplorerPage
 from ui.formatting import format_size
 from ui.placeholder_page import PlaceholderPage
-from ui.worker import ScanWorker
+from ui.worker import CleanupWorker, DuplicateWorker, ScanWorker
 
 
 SECTIONS = (
@@ -43,6 +47,8 @@ class MainWindow(QMainWindow):
         self.selected_folder: str | None = None
         self.scan_result: ScanResult | None = None
         self.scan_worker: ScanWorker | None = None
+        self.duplicate_worker: DuplicateWorker | None = None
+        self.cleanup_worker: CleanupWorker | None = None
         self.active_scan_scope: str | None = None
         self._close_after_scan = False
         self.local_drives = discover_local_drives()
@@ -71,11 +77,13 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.dashboard = DashboardPage()
         self.explorer = ExplorerPage()
+        self.duplicates = DuplicatesPage()
+        self.cleanup = CleanupPage()
         self.pages = [
             self.dashboard,
             self.explorer,
-            PlaceholderPage("Duplicates", "Find duplicate files across a selected folder."),
-            PlaceholderPage("Cleanup", "Review safe opportunities to free up storage."),
+            self.duplicates,
+            self.cleanup,
             PlaceholderPage("Settings", "Application preferences will be available here."),
         ]
 
@@ -90,7 +98,7 @@ class MainWindow(QMainWindow):
             self.nav_buttons.append(button)
             sidebar_layout.addWidget(button)
         sidebar_layout.addStretch()
-        version = QLabel("SpaceWise  •  Sprint 1.1")
+        version = QLabel("SpaceWise  •  Sprint 2")
         version.setObjectName("sidebarFooter")
         sidebar_layout.addWidget(version)
 
@@ -104,6 +112,10 @@ class MainWindow(QMainWindow):
         self.dashboard.scan_drive_requested.connect(self.scan_drive)
         self.dashboard.cancel_scan_requested.connect(self.cancel_scan)
         self.explorer.cancel_scan_requested.connect(self.cancel_scan)
+        self.duplicates.find_duplicates_requested.connect(self.find_duplicates)
+        self.duplicates.cancel_requested.connect(self.cancel_duplicate_analysis)
+        self.cleanup.analyze_requested.connect(self.analyze_cleanup)
+        self.cleanup.cancel_requested.connect(self.cancel_cleanup_analysis)
         self.dashboard.open_category_requested.connect(self.open_category_in_explorer)
         root_layout.addWidget(sidebar)
         root_layout.addWidget(self.stack, 1)
@@ -182,6 +194,9 @@ class MainWindow(QMainWindow):
             }
             #comingSoon { font-size: 19pt; font-weight: 650; }
             QScrollArea { border: none; }
+            #analysisProgressPanel {
+                background: #f7f8fa; border: 1px solid #e7e9ed; border-radius: 8px;
+            }
             """
         )
 
@@ -248,11 +263,20 @@ class MainWindow(QMainWindow):
         stay_on_volume: bool = False,
         strict_roots: bool,
     ) -> None:
+        if (
+            (self.duplicate_worker is not None and self.duplicate_worker.isRunning())
+            or (self.cleanup_worker is not None and self.cleanup_worker.isRunning())
+        ):
+            self.dashboard.set_scan_failed(
+                scope,
+                "Wait for the current analysis to finish or cancel it before starting a scan.",
+            )
+            return
         if self.scan_worker is not None and self.scan_worker.isRunning():
             return
         self.active_scan_scope = scope
         self.dashboard.set_scanning(True, scope)
-        self.explorer.set_scanning(scope)
+        self.explorer.set_scanning()
         self.scan_worker = ScanWorker(
             folders,
             scan_scope=scope,
@@ -279,11 +303,119 @@ class MainWindow(QMainWindow):
             )
             self.explorer.set_cancelling()
 
+    def find_duplicates(self, personal_only: bool) -> None:
+        if self.scan_worker is not None and self.scan_worker.isRunning():
+            self.duplicates.set_failed("Wait for the active scan to finish first.")
+            return
+        if self.cleanup_worker is not None and self.cleanup_worker.isRunning():
+            self.duplicates.set_failed("Wait for recommendation analysis to finish first.")
+            return
+        if self.duplicate_worker is not None and self.duplicate_worker.isRunning():
+            return
+        if self.scan_result is None:
+            self.duplicates.set_no_candidates("Complete a scan before searching for duplicates.")
+            return
+
+        personal_roots = discover_user_folders() if personal_only else None
+        self.duplicates.set_analyzing()
+        self.duplicate_worker = DuplicateWorker(
+            self.scan_result.files,
+            personal_roots=personal_roots,
+        )
+        self.duplicate_worker.completed.connect(self._duplicates_completed)
+        self.duplicate_worker.failed.connect(self.duplicates.set_failed)
+        self.duplicate_worker.progress.connect(self._duplicates_progress)
+        self.duplicate_worker.cancelled.connect(self.duplicates.set_cancelled)
+        self.duplicate_worker.finished.connect(self._duplicates_finished)
+        self.duplicate_worker.start()
+
+    def cancel_duplicate_analysis(self) -> None:
+        if self.duplicate_worker is not None and self.duplicate_worker.isRunning():
+            self.duplicate_worker.cancel()
+            self.duplicates.cancel_button.setEnabled(False)
+            self.duplicates.cancel_button.setText("Cancelling…")
+
+    def analyze_cleanup(self, age_threshold_days: int, large_file_threshold_bytes: int) -> None:
+        if self.scan_worker is not None and self.scan_worker.isRunning():
+            self.cleanup.set_failed("Wait for the active scan to finish first.")
+            return
+        if self.duplicate_worker is not None and self.duplicate_worker.isRunning():
+            self.cleanup.set_failed("Wait for duplicate analysis to finish first.")
+            return
+        if self.cleanup_worker is not None and self.cleanup_worker.isRunning():
+            return
+        if self.scan_result is None:
+            self.cleanup.set_failed("Complete a scan before analyzing recommendations.")
+            return
+
+        self.cleanup.set_analyzing()
+        self.cleanup_worker = CleanupWorker(
+            self.scan_result.files,
+            personal_roots=discover_user_folders(),
+            age_threshold_days=age_threshold_days,
+            large_file_threshold_bytes=large_file_threshold_bytes,
+            duplicate_analysis=self.duplicates.analysis,
+        )
+        self.cleanup_worker.completed.connect(self._cleanup_completed)
+        self.cleanup_worker.failed.connect(self.cleanup.set_failed)
+        self.cleanup_worker.progress.connect(self._cleanup_progress)
+        self.cleanup_worker.cancelled.connect(self.cleanup.set_cancelled)
+        self.cleanup_worker.finished.connect(self._cleanup_finished)
+        self.cleanup_worker.start()
+
+    def cancel_cleanup_analysis(self) -> None:
+        if self.cleanup_worker is not None and self.cleanup_worker.isRunning():
+            self.cleanup_worker.cancel()
+            self.cleanup.cancel_button.setEnabled(False)
+            self.cleanup.cancel_button.setText("Cancelling…")
+
+    def _cleanup_completed(self, result: object) -> None:
+        if not isinstance(result, CleanupRecommendations):
+            self.cleanup.set_failed("The analyzer returned an unexpected result.")
+            return
+        self.cleanup.set_result(result)
+
+    def _cleanup_progress(self, progress: object) -> None:
+        if isinstance(progress, RecommendationProgress):
+            self.cleanup.set_progress(progress)
+
+    def _cleanup_finished(self) -> None:
+        self.cleanup_worker = None
+        if self._close_after_scan and (
+            (self.scan_worker is None or not self.scan_worker.isRunning())
+            and (self.duplicate_worker is None or not self.duplicate_worker.isRunning())
+        ):
+            self._close_after_scan = False
+            self.close()
+
+    def _duplicates_completed(self, result: object) -> None:
+        if not isinstance(result, DuplicateAnalysis):
+            self.duplicates.set_failed("The analyzer returned an unexpected result.")
+            return
+        self.duplicates.set_result(result)
+        if self.scan_result is not None:
+            self.cleanup.set_scan_result(self.scan_result)
+
+    def _duplicates_progress(self, progress: object) -> None:
+        if isinstance(progress, DuplicateProgress):
+            self.duplicates.set_progress(progress)
+
+    def _duplicates_finished(self) -> None:
+        self.duplicate_worker = None
+        if self._close_after_scan and (
+            (self.scan_worker is None or not self.scan_worker.isRunning())
+            and (self.cleanup_worker is None or not self.cleanup_worker.isRunning())
+        ):
+            self._close_after_scan = False
+            self.close()
+
     def _scan_completed(self, result: object) -> None:
         if not isinstance(result, ScanResult):
             QMessageBox.critical(self, "Scan error", "The scanner returned an unexpected result.")
             return
         self.scan_result = result
+        self.duplicates.set_scan_result(result)
+        self.cleanup.set_scan_result(result)
         self.dashboard.set_result(result)
         self.explorer.set_result(result)
 
@@ -293,9 +425,10 @@ class MainWindow(QMainWindow):
         self.explorer.set_scan_failed(scope, message)
         QMessageBox.warning(self, "Could not scan folder", message)
 
-    def _scan_progress(self, message: str) -> None:
-        self.dashboard.set_scan_progress(message)
-        self.explorer.set_scan_progress(message)
+    def _scan_progress(self, progress: object) -> None:
+        if isinstance(progress, ScanProgress):
+            self.dashboard.set_scan_progress(progress)
+            self.explorer.set_scan_progress(progress)
 
     def _scan_cancelled(self, message: str) -> None:
         scope = self.active_scan_scope or "requested scan"
@@ -306,7 +439,10 @@ class MainWindow(QMainWindow):
         self.dashboard.set_scanning(False)
         self.scan_worker = None
         self.active_scan_scope = None
-        if self._close_after_scan:
+        if self._close_after_scan and (
+            (self.duplicate_worker is None or not self.duplicate_worker.isRunning())
+            and (self.cleanup_worker is None or not self.cleanup_worker.isRunning())
+        ):
             self._close_after_scan = False
             self.close()
 
@@ -326,9 +462,19 @@ class MainWindow(QMainWindow):
         self.explorer.set_category_filter(category)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self.scan_worker is not None and self.scan_worker.isRunning():
+        scan_running = self.scan_worker is not None and self.scan_worker.isRunning()
+        duplicates_running = (
+            self.duplicate_worker is not None and self.duplicate_worker.isRunning()
+        )
+        cleanup_running = self.cleanup_worker is not None and self.cleanup_worker.isRunning()
+        if scan_running or duplicates_running or cleanup_running:
             self._close_after_scan = True
-            self.scan_worker.cancel()
+            if scan_running:
+                self.scan_worker.cancel()
+            if duplicates_running:
+                self.duplicate_worker.cancel()
+            if cleanup_running:
+                self.cleanup_worker.cancel()
             event.ignore()
             return
         super().closeEvent(event)

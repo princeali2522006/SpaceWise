@@ -5,13 +5,19 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QThread, Signal
 
-from core.scanner import DriveUsage, ScanCancelledError, scan_folders
+from core.duplicates import DuplicateAnalysisCancelled, analyze_duplicates
+from core.recommendations import (
+    RecommendationAnalysisCancelled,
+    build_cleanup_recommendations,
+)
+from core.duplicates import DuplicateAnalysis, DuplicateAnalysisCancelled, analyze_duplicates
+from core.scanner import DriveUsage, ScannedFile, ScanCancelledError, scan_folders
 
 
 class ScanWorker(QThread):
     completed = Signal(object)
     failed = Signal(str)
-    progress = Signal(str)
+    progress = Signal(object)
     cancelled = Signal(str)
 
     def __init__(
@@ -47,6 +53,85 @@ class ScanWorker(QThread):
             )
             self.completed.emit(result)
         except ScanCancelledError as error:
+            self.cancelled.emit(str(error))
+        except (OSError, ValueError) as error:
+            self.failed.emit(str(error))
+
+
+class DuplicateWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+    progress = Signal(object)
+    cancelled = Signal(str)
+
+    def __init__(
+        self,
+        files: Sequence[ScannedFile],
+        *,
+        personal_roots: Sequence[str] | None = None,
+    ) -> None:
+        super().__init__()
+        self.files = tuple(files)
+        self.personal_roots = tuple(personal_roots) if personal_roots is not None else None
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def run(self) -> None:
+        try:
+            result = analyze_duplicates(
+                self.files,
+                personal_roots=self.personal_roots,
+                progress_callback=self.progress.emit,
+                cancel_event=self._cancel_event,
+            )
+            self.completed.emit(result)
+        except DuplicateAnalysisCancelled as error:
+            self.cancelled.emit(str(error))
+        except (OSError, ValueError) as error:
+            self.failed.emit(str(error))
+
+
+class CleanupWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+    progress = Signal(object)
+    cancelled = Signal(str)
+
+    def __init__(
+        self,
+        files: Sequence[ScannedFile],
+        *,
+        personal_roots: Sequence[str],
+        age_threshold_days: int,
+        large_file_threshold_bytes: int,
+        duplicate_analysis: DuplicateAnalysis | None,
+    ) -> None:
+        super().__init__()
+        self.files = tuple(files)
+        self.personal_roots = tuple(personal_roots)
+        self.age_threshold_days = age_threshold_days
+        self.large_file_threshold_bytes = large_file_threshold_bytes
+        self.duplicate_analysis = duplicate_analysis
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def run(self) -> None:
+        try:
+            result = build_cleanup_recommendations(
+                self.files,
+                personal_roots=self.personal_roots,
+                age_threshold_days=self.age_threshold_days,
+                large_file_threshold_bytes=self.large_file_threshold_bytes,
+                duplicate_analysis=self.duplicate_analysis,
+                progress_callback=self.progress.emit,
+                cancel_event=self._cancel_event,
+            )
+            self.completed.emit(result)
+        except RecommendationAnalysisCancelled as error:
             self.cancelled.emit(str(error))
         except (OSError, ValueError) as error:
             self.failed.emit(str(error))

@@ -13,7 +13,13 @@ from typing import Callable, Iterable
 from core.categorizer import categorize_file
 
 
-ProgressCallback = Callable[[str], None]
+@dataclass(frozen=True)
+class ScanProgress:
+    files_scanned: int
+    elapsed_seconds: float
+
+
+ProgressCallback = Callable[[ScanProgress], None]
 
 
 @dataclass(frozen=True)
@@ -169,7 +175,6 @@ def scan_folders(
     inaccessible_items = 0
     inaccessible_directories = 0
     skipped_directories = 0
-    visited_directories = 0
     last_progress_at = 0.0
 
     def check_cancelled() -> None:
@@ -193,18 +198,21 @@ def scan_folders(
             seen_skipped_directories.add(key)
             skipped_directories += 1
 
-    def report_progress(current: str, *, force: bool = False) -> None:
+    def report_progress(*, force: bool = False) -> None:
         nonlocal last_progress_at
         if progress_callback is None:
             return
         now = time.monotonic()
         if force or now - last_progress_at >= 0.15:
             progress_callback(
-                f"{scan_scope}: {_display_path(current)} · "
-                f"{visited_directories:,} folder(s) visited · {len(files):,} file(s) found"
+                ScanProgress(
+                    files_scanned=len(files),
+                    elapsed_seconds=time.perf_counter() - started,
+                )
             )
             last_progress_at = now
 
+    report_progress(force=True)
     valid_roots: list[str] = []
     for root_path in roots:
         check_cancelled()
@@ -242,8 +250,7 @@ def scan_folders(
                 record_inaccessible(current, directory=True)
                 continue
             seen_directories.add(current_key)
-            visited_directories += 1
-            report_progress(current, force=True)
+            report_progress()
 
             with entries:
                 try:
@@ -318,7 +325,7 @@ def scan_folders(
                                 folders_count[folder_key] += 1
                                 folders_name.setdefault(folder_key, path_parts[0])
                             if len(files) % 128 == 0:
-                                report_progress(entry.path)
+                                report_progress()
                         except OSError:
                             record_inaccessible(entry.path)
                 except OSError:
@@ -372,7 +379,7 @@ def scan_folders(
         root_path = scan_scope
     else:
         root_path = scan_scope
-    report_progress(root_path, force=True)
+    report_progress(force=True)
 
     return ScanResult(
         root_path=root_path,

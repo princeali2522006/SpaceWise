@@ -9,7 +9,11 @@ CATEGORY_EXTENSIONS: dict[str, frozenset[str]] = {
     "Documents": frozenset({".doc", ".docx", ".md", ".odt", ".pdf", ".ppt", ".pptx", ".rtf", ".tex", ".txt", ".xls", ".xlsx"}),
     "Audio": frozenset({".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"}),
     "Archives": frozenset({".7z", ".bz2", ".cab", ".gz", ".rar", ".tar", ".xz", ".zip"}),
-    "Code": frozenset({".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html", ".java", ".js", ".json", ".jsx", ".kt", ".lua", ".php", ".py", ".rb", ".rs", ".scss", ".sh", ".sql", ".ts", ".tsx", ".xml", ".yaml", ".yml"}),
+    "Code": frozenset({".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html", ".java", ".js", ".json", ".jsx", ".kt", ".lua", ".php", ".py", ".rb", ".rs", ".scss", ".sh", ".sql", ".tsx", ".xml", ".yaml", ".yml"}),
+    "Installers": frozenset({".appx", ".appxbundle", ".exe", ".msi", ".msix", ".msixbundle"}),
+    "Virtual Machine Disks": frozenset({".qcow2", ".vdi", ".vhd", ".vhdx", ".vmdk"}),
+    "Disk Images": frozenset({".img", ".iso"}),
+    "Databases": frozenset({".accdb", ".db", ".mdb", ".sqlite", ".sqlite3"}),
 }
 
 

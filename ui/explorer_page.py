@@ -6,13 +6,13 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
-from core.scanner import ScanResult, ScannedFile
+from core.scanner import ScanProgress, ScanResult, ScannedFile
+from ui.activity_panel import ActivityPanel
 from ui.formatting import format_size
 
 
@@ -136,22 +136,15 @@ class ExplorerPage(QWidget):
         self.path_label.setObjectName("pathBanner")
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.path_label)
-        self.progress_label = QLabel()
-        self.progress_label.setObjectName("mutedText")
-        self.progress_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.progress_label.hide()
-        layout.addWidget(self.progress_label)
         self.scan_status_label = QLabel()
         self.scan_status_label.setObjectName("scanStatus")
         self.scan_status_label.hide()
-        self.cancel_scan_button = QPushButton("Cancel Scan")
-        self.cancel_scan_button.setObjectName("secondaryButton")
-        self.cancel_scan_button.clicked.connect(self.cancel_scan_requested.emit)
-        self.cancel_scan_button.hide()
-        status_row = QHBoxLayout()
-        status_row.addWidget(self.scan_status_label, 1)
-        status_row.addWidget(self.cancel_scan_button)
-        layout.addLayout(status_row)
+        layout.addWidget(self.scan_status_label)
+        self.activity_panel = ActivityPanel("Cancel Scan")
+        self.activity_panel.cancel_requested.connect(self.cancel_scan_requested.emit)
+        self.cancel_scan_button = self.activity_panel.cancel_button
+        self.progress_label = self.activity_panel.details_label
+        layout.addWidget(self.activity_panel)
 
         self.file_model = ScannedFilesModel(self)
         self.proxy_model = ScannedFilesProxyModel(self)
@@ -193,9 +186,7 @@ class ExplorerPage(QWidget):
             self.search_input.clear()
             self.scan_status_label.clear()
             self.scan_status_label.hide()
-            self.cancel_scan_button.hide()
-            self.progress_label.clear()
-            self.progress_label.hide()
+            self.activity_panel.stop()
             self._show_empty()
             return
 
@@ -214,9 +205,7 @@ class ExplorerPage(QWidget):
         self.filter_combo.blockSignals(False)
         self.scan_status_label.clear()
         self.scan_status_label.hide()
-        self.cancel_scan_button.hide()
-        self.progress_label.clear()
-        self.progress_label.hide()
+        self.activity_panel.stop()
         self.file_model.set_files(result.files)
         self.table.setEnabled(True)
         self._populate_table()
@@ -228,38 +217,29 @@ class ExplorerPage(QWidget):
             )
             self.scan_status_label.show()
 
-    def set_scanning(self, scope: str | None) -> None:
-        if scope is None:
-            return
-        if self.last_scan_root is None:
-            message = f"Scanning: {scope} — no completed scan yet."
-        else:
-            message = (
-                f"Scanning: {scope} — showing the last completed scan above until this scan finishes."
-            )
-        self.scan_status_label.setText(message)
+    def set_scanning(self) -> None:
+        self.scan_status_label.setText(
+            "Analyzing your storage — the last completed results remain available until this scan finishes."
+            if self.files
+            else "Analyzing your storage — no completed scan yet."
+        )
         self.scan_status_label.show()
-        self.cancel_scan_button.setEnabled(True)
-        self.cancel_scan_button.setText("Cancel Scan")
-        self.cancel_scan_button.show()
+        self.activity_panel.start("Analyzing your storage", "Files scanned so far: 0")
 
     def set_scan_failed(self, folder: str, message: str) -> None:
-        self.progress_label.clear()
-        self.progress_label.hide()
-        self.cancel_scan_button.hide()
+        self.activity_panel.stop()
         self.scan_status_label.setText(
             f"Scan failed for {folder}: {message} Previous completed results remain displayed."
         )
         self.scan_status_label.show()
 
-    def set_scan_progress(self, message: str) -> None:
-        self.progress_label.setText(message)
-        self.progress_label.show()
+    def set_scan_progress(self, progress: ScanProgress) -> None:
+        self.activity_panel.set_details(
+            f"Files scanned so far: {progress.files_scanned:,}"
+        )
 
     def set_scan_cancelled(self, scope: str, message: str) -> None:
-        self.progress_label.clear()
-        self.progress_label.hide()
-        self.cancel_scan_button.hide()
+        self.activity_panel.stop()
         self.scan_status_label.setText(
             f"Scan cancelled: {scope}. {message} The last completed scan remains displayed."
         )
@@ -271,8 +251,7 @@ class ExplorerPage(QWidget):
             self.filter_combo.setCurrentIndex(index)
 
     def set_cancelling(self) -> None:
-        self.cancel_scan_button.setEnabled(False)
-        self.cancel_scan_button.setText("Cancelling…")
+        self.activity_panel.set_cancelling()
 
     def _populate_table(self, *_: str) -> None:
         self.proxy_model.set_filter(

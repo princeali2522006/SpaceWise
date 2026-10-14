@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QComboBox,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -20,7 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.scanner import ScanResult
+from core.scanner import ScanProgress, ScanResult
+from ui.activity_panel import ActivityPanel
 from ui.formatting import format_size
 
 
@@ -31,6 +31,10 @@ PALETTE = {
     "Audio": "#ef6aa3",
     "Archives": "#ff824d",
     "Code": "#48aee8",
+    "Installers": "#aa77d4",
+    "Virtual Machine Disks": "#cc6c54",
+    "Disk Images": "#607d8b",
+    "Databases": "#4c9a8a",
     "Other": "#aeb5c0",
 }
 
@@ -164,11 +168,6 @@ class DashboardPage(QWidget):
         self.scan_drive_button.clicked.connect(self._request_drive_scan)
         actions.addWidget(self.scan_drive_button)
         actions.addStretch()
-        self.cancel_scan_button = QPushButton("Cancel Scan")
-        self.cancel_scan_button.setObjectName("secondaryButton")
-        self.cancel_scan_button.clicked.connect(self.cancel_scan_requested.emit)
-        self.cancel_scan_button.hide()
-        actions.addWidget(self.cancel_scan_button)
         outer.addLayout(actions)
 
         self.folder_label = QLabel("Selected folder: none")
@@ -184,17 +183,12 @@ class DashboardPage(QWidget):
         self.scan_status_label.setObjectName("scanStatus")
         self.scan_status_label.hide()
         outer.addWidget(self.scan_status_label)
-        self.progress_label = QLabel()
-        self.progress_label.setObjectName("mutedText")
-        self.progress_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.progress_label.hide()
-        outer.addWidget(self.progress_label)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setObjectName("scanProgress")
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(5)
-        self.progress_bar.hide()
-        outer.addWidget(self.progress_bar)
+        self.activity_panel = ActivityPanel("Cancel Scan")
+        self.activity_panel.cancel_requested.connect(self.cancel_scan_requested.emit)
+        self.cancel_scan_button = self.activity_panel.cancel_button
+        self.progress_label = self.activity_panel.details_label
+        self.progress_bar = self.activity_panel.progress_bar
+        outer.addWidget(self.activity_panel)
         self.drive_usage_label = QLabel()
         self.drive_usage_label.setObjectName("pathBanner")
         self.drive_usage_label.setWordWrap(True)
@@ -248,7 +242,14 @@ class DashboardPage(QWidget):
         self.legend = QVBoxLayout()
         self.legend.setSpacing(3)
         category_content.addLayout(self.legend, 3)
+        self.category_note = QLabel(
+            "Installers, virtual machine disks, disk images and databases are extension-based "
+            "estimates; file contents are not inspected."
+        )
+        self.category_note.setObjectName("mutedText")
+        self.category_note.setWordWrap(True)
         category_body.addLayout(category_content, 1)
+        category_body.addWidget(self.category_note)
         self.category_details = QFrame()
         self.category_details.setObjectName("detailCard")
         detail_layout = QVBoxLayout(self.category_details)
@@ -268,9 +269,10 @@ class DashboardPage(QWidget):
         self.category_largest.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.category_largest.setShowGrid(False)
         self.category_largest.verticalHeader().hide()
+        self.category_largest.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.category_largest.horizontalHeader().setStretchLastSection(True)
         self.category_largest.setColumnWidth(0, 230)
-        self.category_largest.setMinimumHeight(126)
+        self._fit_table_height(self.category_largest)
         detail_layout.addWidget(self.category_largest)
         self.open_explorer_button = QPushButton("Open category in Explorer")
         self.open_explorer_button.setObjectName("secondaryButton")
@@ -291,11 +293,12 @@ class DashboardPage(QWidget):
         self.largest_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.largest_table.setShowGrid(False)
         self.largest_table.verticalHeader().hide()
+        self.largest_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.largest_table.horizontalHeader().setStretchLastSection(True)
         self.largest_table.setColumnWidth(0, 180)
-        self.largest_table.setColumnWidth(1, 72)
-        self.largest_table.setMinimumHeight(260)
-        self.largest_card.layout().addWidget(self.largest_table, 1)
+        self.largest_table.setColumnWidth(1, 110)
+        self._fit_table_height(self.largest_table)
+        self.largest_card.layout().addWidget(self.largest_table)
         result_layout.addWidget(self.category_card, 0, 0)
         result_layout.addWidget(self.largest_card, 0, 1)
 
@@ -311,9 +314,11 @@ class DashboardPage(QWidget):
         self.subfolder_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.subfolder_table.setShowGrid(False)
         self.subfolder_table.verticalHeader().hide()
+        self.subfolder_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.subfolder_table.horizontalHeader().setStretchLastSection(True)
         self.subfolder_table.setColumnWidth(0, 260)
-        self.subfolder_table.setMinimumHeight(120)
+        self.subfolder_table.setColumnWidth(1, 110)
+        self._fit_table_height(self.subfolder_table)
         self.subfolder_card.layout().addWidget(self.subfolder_table)
         result_layout.addWidget(self.subfolder_card, 1, 0, 1, 2)
         result_layout.setColumnStretch(0, 1)
@@ -337,6 +342,13 @@ class DashboardPage(QWidget):
         label.setObjectName("sectionTitle")
         layout.addWidget(label)
         return panel
+
+    @staticmethod
+    def _fit_table_height(table: QTableWidget) -> None:
+        table.resizeRowsToContents()
+        header_height = table.horizontalHeader().sizeHint().height()
+        rows_height = sum(table.rowHeight(row) for row in range(table.rowCount()))
+        table.setFixedHeight(header_height + rows_height + table.frameWidth() * 2 + 2)
 
     def show_empty_state(self) -> None:
         self.empty_state.show()
@@ -373,26 +385,26 @@ class DashboardPage(QWidget):
         self.drive_combo.setEnabled(not scanning)
         self.scan_button.setText("Scanning…" if scanning else "Scan Folder")
         if scanning:
+            if folder == "Selected folder":
+                scope_label = "Selected folder"
+            elif folder == "Scan My Files":
+                scope_label = "personal folders"
+            elif folder and folder.startswith("Drive scan"):
+                scope_label = "selected drive"
+            else:
+                scope_label = "storage"
             if self.result is None:
-                status = f"Scanning: {folder or 'selected folder'} — no completed scan yet."
+                status = f"Analyzing your storage · {scope_label} — no completed scan yet."
             else:
                 status = (
-                    f"Scanning: {folder or 'selected folder'} — showing the last completed scan "
+                    f"Analyzing your storage · {scope_label} — the last completed results remain available "
                     "until this scan finishes."
                 )
             self.scan_status_label.setText(status)
             self.scan_status_label.show()
-            self.progress_label.clear()
-            self.progress_label.show()
-            self.progress_bar.setRange(0, 0)
-            self.progress_bar.show()
-            self.cancel_scan_button.setEnabled(True)
-            self.cancel_scan_button.setText("Cancel Scan")
-            self.cancel_scan_button.show()
+            self.activity_panel.start("Analyzing your storage", "Files scanned so far: 0")
         else:
-            self.progress_label.hide()
-            self.progress_bar.hide()
-            self.cancel_scan_button.hide()
+            self.activity_panel.stop()
 
     def set_result(self, result: ScanResult) -> None:
         self.result = result
@@ -439,7 +451,10 @@ class DashboardPage(QWidget):
                 button.setObjectName("categoryButton")
                 button.setStyleSheet(f"color: {PALETTE[category.name]};")
                 button.setCheckable(True)
-                button.setToolTip(f"{category.file_count:,} file(s) in {category.name}")
+                button.setToolTip(
+                    f"{category.file_count:,} file(s) in {category.name}. "
+                    "Classification is based on the filename extension only; file contents are not inspected."
+                )
                 button.setCursor(Qt.CursorShape.PointingHandCursor)
                 button.clicked.connect(partial(self.select_category, category.name))
                 self.category_buttons[category.name] = button
@@ -451,6 +466,7 @@ class DashboardPage(QWidget):
         self.legend.addStretch()
 
         self.category_largest.setRowCount(0)
+        self._fit_table_height(self.category_largest)
         self.category_detail_title.setText("Select a category to see its details.")
         self.category_detail_summary.clear()
         self.open_explorer_button.setEnabled(False)
@@ -463,6 +479,7 @@ class DashboardPage(QWidget):
                 item = QTableWidgetItem(text)
                 item.setToolTip(text)
                 self.largest_table.setItem(row, column, item)
+        self._fit_table_height(self.largest_table)
 
         self.largest_hint.setText("The 10 largest files in this scan.")
         if result.inaccessible_items or result.skipped_directories:
@@ -502,6 +519,7 @@ class DashboardPage(QWidget):
             size_item.setToolTip(file.path)
             self.category_largest.setItem(row, 0, name_item)
             self.category_largest.setItem(row, 1, size_item)
+        self._fit_table_height(self.category_largest)
         self.open_explorer_button.setEnabled(True)
 
     def _open_selected_category(self) -> None:
@@ -518,6 +536,7 @@ class DashboardPage(QWidget):
                 item = QTableWidgetItem(text)
                 item.setToolTip(folder.path)
                 self.subfolder_table.setItem(row, column, item)
+        self._fit_table_height(self.subfolder_table)
         if result.subfolders:
             shown = min(10, len(result.subfolders))
             self.subfolder_hint.setText(
@@ -533,8 +552,10 @@ class DashboardPage(QWidget):
         )
         self.scan_status_label.show()
 
-    def set_scan_progress(self, message: str) -> None:
-        self.progress_label.setText(message)
+    def set_scan_progress(self, progress: ScanProgress) -> None:
+        self.activity_panel.set_details(
+            f"Files scanned so far: {progress.files_scanned:,}"
+        )
 
     def set_scan_cancelled(self, folder: str, message: str) -> None:
         self.scan_status_label.setText(
@@ -543,5 +564,4 @@ class DashboardPage(QWidget):
         self.scan_status_label.show()
 
     def set_cancelling(self) -> None:
-        self.cancel_scan_button.setEnabled(False)
-        self.cancel_scan_button.setText("Cancelling…")
+        self.activity_panel.set_cancelling()
