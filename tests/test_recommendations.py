@@ -7,8 +7,10 @@ from pathlib import Path
 
 from core.duplicates import DuplicateAnalysis, DuplicateGroup
 from core.recommendations import (
+    MIN_LARGE_FILE_THRESHOLD_BYTES,
     RecommendationAnalysisCancelled,
     build_cleanup_recommendations,
+    filter_cleanup_recommendations,
 )
 from core.scanner import ScannedFile
 
@@ -69,6 +71,30 @@ class CleanupRecommendationTests(unittest.TestCase):
         self.assertEqual([item.file for item in result.old_installers], [old_installer])
         self.assertEqual(result.old_installers[0].modified_days_ago, 120)
 
+    def test_installer_threshold_is_inclusive_and_can_be_reapplied_without_rescanning(self) -> None:
+        personal = self.root / "Downloads"
+        exactly_old = self._add_file(
+            personal / "exactly-old.exe",
+            b"installer",
+            "Installers",
+            age_days=90,
+        )
+        result = build_cleanup_recommendations(
+            (exactly_old,),
+            personal_roots=(str(personal),),
+            age_threshold_days=120,
+            protected_roots=(),
+            now=self.now,
+        )
+        self.assertEqual(result.old_installers, ())
+        adjusted = filter_cleanup_recommendations(
+            result,
+            age_threshold_days=90,
+            large_file_threshold_bytes=MIN_LARGE_FILE_THRESHOLD_BYTES,
+        )
+        self.assertEqual([item.file for item in adjusted.old_installers], [exactly_old])
+        self.assertEqual(adjusted.old_installers[0].modified_days_ago, 90)
+
     def test_large_file_filter_excludes_protected_categories_and_project_paths(self) -> None:
         large_user_file = self._add_file(
             self.root / "Downloads" / "video.bin",
@@ -112,6 +138,36 @@ class CleanupRecommendationTests(unittest.TestCase):
 
         self.assertEqual([item.file for item in result.large_files], [large_user_file])
         self.assertEqual(result.large_files[0].modified_days_ago, 0)
+
+    def test_large_file_candidates_reapply_size_threshold_in_memory(self) -> None:
+        smaller = self._add_file(
+            self.root / "Downloads" / "small.bin",
+            b"a" * (2 * 1024**2),
+            "Other",
+        )
+        larger = self._add_file(
+            self.root / "Downloads" / "large.bin",
+            b"b" * (5 * 1024**2),
+            "Other",
+        )
+        result = build_cleanup_recommendations(
+            (smaller, larger),
+            personal_roots=(),
+            large_file_threshold_bytes=4 * 1024**2,
+            protected_roots=(),
+            now=self.now,
+        )
+        self.assertEqual([item.file for item in result.large_files], [larger])
+        lowered = filter_cleanup_recommendations(
+            result,
+            age_threshold_days=90,
+            large_file_threshold_bytes=2 * 1024**2,
+        )
+        self.assertEqual(
+            {item.file for item in lowered.large_files},
+            {smaller, larger},
+        )
+        self.assertEqual(len(lowered.large_file_candidates), 2)
 
     def test_only_verified_duplicate_groups_contribute_duplicate_savings(self) -> None:
         verified = DuplicateGroup(
@@ -159,6 +215,18 @@ class CleanupRecommendationTests(unittest.TestCase):
 
         self.assertEqual(result.large_files, ())
         self.assertEqual(len(result.inaccessible_paths), 1)
+
+    def test_empty_recommendations_are_valid_and_have_no_estimated_savings(self) -> None:
+        result = build_cleanup_recommendations(
+            (),
+            personal_roots=(),
+            protected_roots=(),
+            now=self.now,
+        )
+        self.assertEqual(result.old_installers, ())
+        self.assertEqual(result.large_files, ())
+        self.assertEqual(result.verified_duplicates, ())
+        self.assertEqual(result.duplicate_recoverable_bytes, 0)
 
     def test_cancellation_stops_recommendation_analysis(self) -> None:
         cancel_event = threading.Event()

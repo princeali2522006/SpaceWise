@@ -1,6 +1,6 @@
 """Read-only, review-only storage opportunity analysis."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -15,6 +15,7 @@ from core.scanner import ScannedFile
 
 RecommendationProgressCallback = Callable[["RecommendationProgress"], None]
 PROTECTED_CATEGORIES = frozenset({"Virtual Machine Disks", "Databases"})
+MIN_LARGE_FILE_THRESHOLD_BYTES = 1024**2
 PROTECTED_DIRECTORY_NAMES = frozenset(
     {
         "$recycle.bin",
@@ -61,6 +62,8 @@ class CleanupRecommendations:
     files_checked: int
     inaccessible_paths: tuple[tuple[str, str], ...]
     duplicate_analysis_pending: bool
+    installer_candidates: tuple[FileReviewOpportunity, ...] = ()
+    large_file_candidates: tuple[FileReviewOpportunity, ...] = ()
 
     @property
     def duplicate_recoverable_bytes(self) -> int:
@@ -69,6 +72,38 @@ class CleanupRecommendations:
 
 class RecommendationAnalysisCancelled(Exception):
     """Raised when review-opportunity analysis is cancelled."""
+
+
+def filter_cleanup_recommendations(
+    recommendations: CleanupRecommendations,
+    *,
+    age_threshold_days: int,
+    large_file_threshold_bytes: int,
+) -> CleanupRecommendations:
+    """Apply review thresholds to the candidates already checked for a scan."""
+    if age_threshold_days < 1:
+        raise ValueError("The installer age threshold must be at least one day.")
+    if large_file_threshold_bytes < 1:
+        raise ValueError("The large-file threshold must be at least one byte.")
+    installer_candidates = (
+        recommendations.installer_candidates or recommendations.old_installers
+    )
+    large_file_candidates = (
+        recommendations.large_file_candidates or recommendations.large_files
+    )
+    return replace(
+        recommendations,
+        old_installers=tuple(
+            opportunity
+            for opportunity in installer_candidates
+            if opportunity.modified_days_ago >= age_threshold_days
+        ),
+        large_files=tuple(
+            opportunity
+            for opportunity in large_file_candidates
+            if opportunity.file.size >= large_file_threshold_bytes
+        ),
+    )
 
 
 def _extended_path(path: str) -> str:
@@ -157,6 +192,10 @@ def build_cleanup_recommendations(
     if cancel_event is not None and cancel_event.is_set():
         raise RecommendationAnalysisCancelled("Recommendation analysis cancelled.")
 
+    candidate_size_threshold = min(
+        large_file_threshold_bytes,
+        MIN_LARGE_FILE_THRESHOLD_BYTES,
+    )
     files_to_inspect: list[ScannedFile] = []
     for file in files:
         if cancel_event is not None and cancel_event.is_set():
@@ -166,12 +205,12 @@ def build_cleanup_recommendations(
         installer_candidate = (
             file.category == "Installers" and _inside(file.path, personal_roots)
         )
-        large_candidate = file.size >= large_file_threshold_bytes
+        large_candidate = file.size >= candidate_size_threshold
         if installer_candidate or large_candidate:
             files_to_inspect.append(file)
 
-    installers: list[FileReviewOpportunity] = []
-    large_files: list[FileReviewOpportunity] = []
+    installer_candidates: list[FileReviewOpportunity] = []
+    large_file_candidates: list[FileReviewOpportunity] = []
     inaccessible: list[tuple[str, str]] = []
     started = time.perf_counter()
     for index, file in enumerate(files_to_inspect, start=1):
@@ -182,14 +221,14 @@ def build_cleanup_recommendations(
         except OSError as error:
             inaccessible.append((file.path, str(error)))
         else:
+            opportunity = FileReviewOpportunity(file, age_days)
             if (
                 file.category == "Installers"
                 and _inside(file.path, personal_roots)
-                and age_days >= age_threshold_days
             ):
-                installers.append(FileReviewOpportunity(file, age_days))
-            if file.size >= large_file_threshold_bytes:
-                large_files.append(FileReviewOpportunity(file, age_days))
+                installer_candidates.append(opportunity)
+            if file.size >= candidate_size_threshold:
+                large_file_candidates.append(opportunity)
         if progress_callback is not None:
             progress_callback(
                 RecommendationProgress(
@@ -199,18 +238,33 @@ def build_cleanup_recommendations(
                 )
             )
 
-    installers.sort(key=lambda item: (-item.modified_days_ago, -item.file.size, item.file.path.casefold()))
-    large_files.sort(key=lambda item: (-item.file.size, item.file.path.casefold()))
+    installer_candidates.sort(
+        key=lambda item: (
+            -item.modified_days_ago,
+            -item.file.size,
+            item.file.path.casefold(),
+        )
+    )
+    large_file_candidates.sort(
+        key=lambda item: (-item.file.size, item.file.path.casefold())
+    )
     duplicate_groups = tuple(
         group
         for group in (duplicate_analysis.groups if duplicate_analysis is not None else ())
         if group.verified_copy_count >= 2
     )
-    return CleanupRecommendations(
+    recommendations = CleanupRecommendations(
         verified_duplicates=duplicate_groups,
-        old_installers=tuple(installers),
-        large_files=tuple(large_files),
+        old_installers=(),
+        large_files=(),
         files_checked=len(files_to_inspect),
         inaccessible_paths=tuple(inaccessible),
         duplicate_analysis_pending=duplicate_analysis is None,
+        installer_candidates=tuple(installer_candidates),
+        large_file_candidates=tuple(large_file_candidates),
+    )
+    return filter_cleanup_recommendations(
+        recommendations,
+        age_threshold_days=age_threshold_days,
+        large_file_threshold_bytes=large_file_threshold_bytes,
     )

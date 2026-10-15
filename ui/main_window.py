@@ -1,17 +1,22 @@
 """Main application window and sidebar navigation."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QAbstractSpinBox,
     QButtonGroup,
+    QComboBox,
     QFileDialog,
     QFrame,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
@@ -137,8 +142,11 @@ class MainWindow(QMainWindow):
                 text-align: left; padding: 10px 11px; border: 0; border-radius: 7px;
                 color: #434953; background: transparent; font-size: 9.5pt;
             }
-            QPushButton#navButton:hover { background: #eceef2; }
+            QPushButton#navButton:enabled:hover { background: #eceef2; }
+            QPushButton#navButton:enabled:pressed { background: #e1e3e7; }
             QPushButton#navButton:checked { background: #e7e9ed; color: #17191d; font-weight: 600; }
+            QPushButton#navButton:focus { border: 1px solid #aeb3bc; }
+            QPushButton#navButton:disabled { color: #aeb3bc; }
             #pageTitle { font-size: 20pt; font-weight: 700; }
             #mutedText { color: #747c88; font-size: 9pt; }
             #statCard, #panel, #emptyCard {
@@ -157,21 +165,56 @@ class MainWindow(QMainWindow):
                 text-align: left; padding: 5px 7px; border: 0; border-radius: 5px;
                 background: transparent; font-size: 9pt;
             }
-            QPushButton#categoryButton:hover { background: #f1f2f5; }
+            QPushButton#categoryButton:enabled:hover { background: #f1f2f5; }
+            QPushButton#categoryButton:enabled:pressed { background: #e7e9ed; }
             QPushButton#categoryButton:checked { background: #f1f2f5; font-weight: 600; }
+            QPushButton#categoryButton:focus { border: 1px solid #b8bec8; }
             QLineEdit#searchInput {
                 padding: 8px 10px; border: 1px solid #dfe2e7; border-radius: 7px;
                 background: white; selection-background-color: #e9edf7;
             }
-            QLineEdit#searchInput:focus { border-color: #b8bec8; }
-            QPushButton#primaryButton, QPushButton#secondaryButton {
+            QLineEdit#searchInput:focus { border: 2px solid #8b919b; }
+            QPushButton {
                 border-radius: 7px; padding: 9px 15px; font-weight: 600;
+                background: #ffffff; border: 1px solid #dfe2e7; color: #17191d;
             }
             QPushButton#primaryButton { background: #17191d; color: white; border: 1px solid #17191d; }
-            QPushButton#primaryButton:hover { background: #35383f; }
-            QPushButton#primaryButton:disabled { background: #8e9299; border-color: #8e9299; }
-            QPushButton#secondaryButton { background: #ffffff; border: 1px solid #dfe2e7; }
-            QPushButton#secondaryButton:hover { background: #f6f7f9; }
+            QPushButton:enabled:hover { background: #f1f2f5; border-color: #c8ccd3; }
+            QPushButton:enabled:pressed { background: #e5e7eb; border-color: #b9bec7; }
+            QPushButton:focus { border: 2px solid #858b95; }
+            QPushButton:disabled {
+                color: #9ba1aa; background: #f1f2f4; border-color: #e1e3e7;
+            }
+            QPushButton#primaryButton:enabled:hover { background: #35383f; border-color: #35383f; }
+            QPushButton#primaryButton:enabled:pressed { background: #4a4d54; border-color: #4a4d54; }
+            QPushButton#primaryButton:focus { border: 2px solid #858b95; }
+            QPushButton#primaryButton:disabled {
+                color: #e4e5e7; background: #8e9299; border-color: #8e9299;
+            }
+            QPushButton#secondaryButton:enabled:hover { background: #f6f7f9; }
+            QPushButton#secondaryButton:enabled:pressed { background: #e9ebef; }
+            QPushButton#secondaryButton:focus { border: 2px solid #858b95; }
+            QPushButton#thresholdButton {
+                font-size: 15pt; padding: 2px; border-radius: 7px;
+            }
+            QLineEdit, QComboBox, QSpinBox {
+                padding: 7px 9px; border: 1px solid #dfe2e7; border-radius: 7px;
+                background: #ffffff; selection-background-color: #e9edf7;
+            }
+            QPlainTextEdit {
+                padding: 6px 8px; border: 1px solid #dfe2e7; border-radius: 7px;
+                background: #ffffff;
+            }
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {
+                border: 2px solid #858b95;
+            }
+            QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QPlainTextEdit:disabled {
+                color: #9ba1aa; background: #f1f2f4; border-color: #e1e3e7;
+            }
+            QComboBox:enabled:hover { border-color: #c8ccd3; background: #fafbfc; }
+            QCheckBox:enabled:hover { color: #17191d; }
+            QCheckBox:focus { border: 1px solid #858b95; border-radius: 3px; }
+            QCheckBox:disabled { color: #9ba1aa; }
             QLabel#pathBanner {
                 padding: 10px 12px; background: #f7f8fa; border: 1px solid #e7e9ed;
                 border-radius: 7px; color: #525a65;
@@ -180,15 +223,22 @@ class MainWindow(QMainWindow):
                 border: none; border-radius: 2px; background: #eceef2;
             }
             QProgressBar#scanProgress::chunk { background: #202328; border-radius: 2px; }
-            QComboBox { padding: 8px 10px; border: 1px solid #dfe2e7; border-radius: 7px; background: white; }
             QTableView, QTableWidget {
                 border: 1px solid #e7e9ed; border-radius: 8px; alternate-background-color: #fafbfc;
             }
+            QTableView:focus, QTableWidget:focus { border: 2px solid #858b95; }
             QHeaderView::section {
                 background: #f7f8fa; color: #616975; border: none;
                 border-bottom: 1px solid #e7e9ed; padding: 9px; font-weight: 600;
             }
+            QHeaderView#sortableHeader::section:hover { background: #eceef2; }
             QTableView::item, QTableWidget::item { padding: 7px; border-bottom: 1px solid #f0f1f3; }
+            QTableView#fileTable::item:hover,
+            QTableView#duplicateGroupsTable::item:hover,
+            QTableView#duplicatePathsTable::item:hover,
+            QTableView#cleanupRecommendationsTable::item:hover {
+                background: #f3f4f6; color: #17191d;
+            }
             QTableView::item:selected, QTableWidget::item:selected {
                 background: #e9edf7; color: #17191d;
             }
@@ -199,6 +249,38 @@ class MainWindow(QMainWindow):
             }
             """
         )
+        for control in self.findChildren(QAbstractButton):
+            self._set_interactive_cursor(control)
+            control.installEventFilter(self)
+        for control in self.findChildren(QComboBox):
+            self._set_interactive_cursor(control)
+            control.installEventFilter(self)
+        for control in self.findChildren(QAbstractSpinBox):
+            self._set_interactive_cursor(control)
+            control.installEventFilter(self)
+        for header in self.findChildren(QHeaderView):
+            if header.sectionsClickable():
+                header.setObjectName("sortableHeader")
+                header.setCursor(Qt.CursorShape.PointingHandCursor)
+        for table in self.findChildren(QTableView):
+            table.setMouseTracking(True)
+            table.viewport().setMouseTracking(True)
+
+    @staticmethod
+    def _set_interactive_cursor(control: QWidget) -> None:
+        control.setCursor(
+            Qt.CursorShape.PointingHandCursor
+            if control.isEnabled()
+            else Qt.CursorShape.ArrowCursor
+        )
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.EnabledChange and isinstance(
+            watched,
+            (QAbstractButton, QComboBox, QAbstractSpinBox),
+        ):
+            self._set_interactive_cursor(watched)
+        return super().eventFilter(watched, event)
 
     def select_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(
