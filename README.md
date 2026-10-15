@@ -36,11 +36,12 @@ Categories use filename extensions only. Installer, virtual-machine-disk, disk-i
 6. Scan an empty folder and a folder with zero-byte files. Confirm counts remain correct and percentages safely display as zero where total size is zero.
 7. Select a Dashboard category; check size, percentage, count and largest category files, then open it in Explorer and verify its category filter.
 8. Check largest-subfolder sizes/counts/order against a nested test folder, including an empty subfolder.
-9. In Explorer, combine filename search with category filtering, sort by filename, size and category, and check the full-path tooltip.
-10. Test inaccessible directories and, where available, symlinks/junctions or mounted volumes; confirm skipped paths are reported and not traversed.
-11. On Duplicates, confirm the analysis runs only after **Find Duplicates**, uses equal-size candidates, reports verified groups and unverified files, handles hard links without inflating savings, and cancels without committing partial results. Try the personal-files limit.
-12. On Cleanup, confirm the defaults are 90 days and 1 GB. Test old and recent installer-like files under a known user folder, a large ordinary file, and protected VM/database/system/project paths. Verify no total combines overlapping file sizes and double-clicking opens only the containing folder.
-13. Open Settings and confirm it remains a Coming soon placeholder.
+9. In Explorer, combine filename search, category filtering and the **All files / Personal files** filter. Confirm Personal files follows the Windows user-folder locations, clear search without losing the selected filters, resize columns, and sort by filename, size and category. Right-click a result and choose **Show in Windows Explorer**; verify it opens the containing folder with the file selected and does not launch the file.
+10. Resize the Dashboard window and its table columns. Scroll over a Dashboard table and confirm the page scrolls smoothly while the sidebar stays stationary.
+11. Test inaccessible directories and, where available, symlinks/junctions or mounted volumes; confirm skipped paths are reported and not traversed.
+12. On Duplicates, confirm the analysis runs only after **Find Duplicates**, uses equal-size candidates, reports verified groups and unverified files, handles hard links without inflating savings, and cancels without committing partial results. Try the personal-files limit.
+13. On Cleanup, confirm the defaults are 90 days and 1 GB. Test old and recent installer-like files under a known user folder, a large ordinary file, and protected VM/database/system/project paths. Verify no total combines overlapping file sizes and double-clicking opens only the containing folder.
+14. Open Settings and confirm it remains a Coming soon placeholder.
 
 Run the focused scanner and UI tests with:
 

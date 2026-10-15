@@ -1,16 +1,37 @@
 """Scanned-file explorer with searchable, sortable, model-backed results."""
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QSortFilterProxyModel, Signal
+import os
+import stat
+from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event
+
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QPoint,
+    QProcess,
+    QTimer,
+    Qt,
+    QSortFilterProxyModel,
+    Signal,
+    QUrl,
+)
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
+    QMessageBox,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
+from core.discovery import discover_user_folders
 from core.scanner import ScanProgress, ScanResult, ScannedFile
 from ui.activity_panel import ActivityPanel
 from ui.formatting import format_size
@@ -19,13 +40,58 @@ from ui.formatting import format_size
 HEADERS = ("Filename", "Size", "Category", "Full path")
 
 
+def _normalized_path(path: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(path)))
+
+
+_FILTER_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="spacewise-filter")
+
+
+def _filter_file_rows(
+    files: tuple[ScannedFile, ...],
+    personal_files: bytes,
+    category: str,
+    query: str,
+    personal_only: bool,
+    sort_column: int,
+    descending: bool,
+    cancel_event: Event,
+) -> tuple[int, ...] | None:
+    folded_query = query.casefold()
+    matching_rows: list[int] = []
+    for row, file in enumerate(files):
+        if row % 1024 == 0 and cancel_event.is_set():
+            return None
+        if category and file.category != category:
+            continue
+        if folded_query and folded_query not in file.name.casefold():
+            continue
+        if personal_only and not personal_files[row]:
+            continue
+        matching_rows.append(row)
+
+    sort_keys = (
+        lambda file: file.name.casefold(),
+        lambda file: file.size,
+        lambda file: file.category.casefold(),
+        lambda file: file.path.casefold(),
+    )
+    matching_rows.sort(
+        key=lambda row: sort_keys[sort_column](files[row]),
+        reverse=descending,
+    )
+    return tuple(matching_rows)
+
+
 class ScannedFilesModel(QAbstractTableModel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.files: tuple[ScannedFile, ...] = ()
+        self.personal_files = b""
+        self.visible_rows: Sequence[int] = range(0)
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return 0 if parent.isValid() else len(self.files)
+        return 0 if parent.isValid() else len(self.visible_rows)
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(HEADERS)
@@ -45,13 +111,17 @@ class ScannedFilesModel(QAbstractTableModel):
         index: QModelIndex,
         role: int = Qt.ItemDataRole.DisplayRole,
     ) -> str | int | None:
-        if not index.isValid() or not 0 <= index.row() < len(self.files):
+        if not index.isValid() or not 0 <= index.row() < len(self.visible_rows):
             return None
-        file = self.files[index.row()]
+        file = self.file_at(index.row())
         values = (file.name, format_size(file.size), file.category, file.path)
         if role == Qt.ItemDataRole.DisplayRole:
             return values[index.column()]
         if role == Qt.ItemDataRole.ToolTipRole:
+            if index.column() == 0:
+                return f"{file.name}\n{file.path}"
+            if index.column() == 1:
+                return f"{file.size:,} bytes"
             return file.path
         if role == Qt.ItemDataRole.UserRole:
             if index.column() == 1:
@@ -60,43 +130,43 @@ class ScannedFilesModel(QAbstractTableModel):
         return None
 
     def file_at(self, row: int) -> ScannedFile:
-        return self.files[row]
+        return self.files[self.visible_rows[row]]
 
-    def set_files(self, files: tuple[ScannedFile, ...]) -> None:
+    def set_files(
+        self,
+        files: tuple[ScannedFile, ...],
+        personal_roots: tuple[str, ...] = (),
+    ) -> None:
+        roots = tuple(_normalized_path(root) for root in personal_roots)
+        root_prefixes = tuple(
+            root if root.endswith(os.sep) else root + os.sep for root in roots
+        )
         self.beginResetModel()
         self.files = files
+        self.visible_rows = range(len(files))
+        self.personal_files = (
+            bytes(
+                any(
+                    path == root or path.startswith(prefix)
+                    for root, prefix in zip(roots, root_prefixes)
+                )
+                for path in (_normalized_path(file.path) for file in files)
+            )
+            if roots
+            else bytes(len(files))
+        )
+        self.endResetModel()
+
+    def set_visible_rows(self, rows: Sequence[int]) -> None:
+        self.beginResetModel()
+        self.visible_rows = rows
         self.endResetModel()
 
 
 class ScannedFilesProxyModel(QSortFilterProxyModel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.category = ""
-        self.query = ""
         self.setSortRole(Qt.ItemDataRole.UserRole)
-
-    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
-        if source_parent.isValid():
-            return False
-        source = self.sourceModel()
-        if not isinstance(source, ScannedFilesModel):
-            return False
-        file = source.file_at(source_row)
-        return (not self.category or file.category == self.category) and (
-            not self.query or self.query in file.name.casefold()
-        )
-
-    def set_filter(self, category: str, query: str) -> None:
-        begin_change = getattr(self, "beginFilterChange", None)
-        if begin_change is not None:
-            begin_change()
-            self.category = "" if category == "All categories" else category
-            self.query = query.strip().casefold()
-            self.endFilterChange(QSortFilterProxyModel.Direction.Rows)
-        else:
-            self.category = "" if category == "All categories" else category
-            self.query = query.strip().casefold()
-            self.invalidateRowsFilter()
 
 
 class ExplorerPage(QWidget):
@@ -106,6 +176,13 @@ class ExplorerPage(QWidget):
         super().__init__()
         self.files: tuple[ScannedFile, ...] = ()
         self.last_scan_root: str | None = None
+        self._filter_generation = 0
+        self._applied_filter_generation = 0
+        self._filter_cancel_event: Event | None = None
+        self._filter_future: Future[tuple[int, ...] | None] | None = None
+        self._filter_future_generation = 0
+        self._sort_column = 0
+        self._sort_order = Qt.SortOrder.AscendingOrder
         layout = QVBoxLayout(self)
         layout.setContentsMargins(30, 26, 30, 26)
         layout.setSpacing(16)
@@ -128,8 +205,12 @@ class ExplorerPage(QWidget):
         self.search_input.setMinimumWidth(230)
         self.filter_combo = QComboBox()
         self.filter_combo.setMinimumWidth(160)
+        self.file_scope_combo = QComboBox()
+        self.file_scope_combo.addItems(("All files", "Personal files"))
+        self.file_scope_combo.setMinimumWidth(145)
         header.addWidget(self.search_input)
         header.addWidget(self.filter_combo)
+        header.addWidget(self.file_scope_combo)
         layout.addLayout(header)
 
         self.path_label = QLabel("No scan yet — choose a folder on the Dashboard and scan it.")
@@ -149,24 +230,36 @@ class ExplorerPage(QWidget):
         self.file_model = ScannedFilesModel(self)
         self.proxy_model = ScannedFilesProxyModel(self)
         self.proxy_model.setSourceModel(self.file_model)
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setInterval(16)
+        self._filter_timer.timeout.connect(self._poll_filter)
         self.table = QTableView()
         self.table.setModel(self.proxy_model)
         self.table.setObjectName("fileTable")
         self.table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
-        self.table.setSortingEnabled(True)
+        self.table.setSortingEnabled(False)
         self.table.setShowGrid(False)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.table.setVerticalScrollMode(QTableView.ScrollMode.ScrollPerPixel)
         self.table.verticalHeader().hide()
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionsClickable(True)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setColumnWidth(0, 310)
-        self.table.setColumnWidth(1, 105)
-        self.table.setColumnWidth(2, 130)
-        self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        self.table.setColumnWidth(0, 270)
+        self.table.setColumnWidth(1, 90)
+        self.table.setColumnWidth(2, 125)
+        self.table.horizontalHeader().setSortIndicator(0, self._sort_order)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
+        self.table.horizontalHeader().sectionClicked.connect(self._sort_by_column)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.table, 1)
 
         self.search_input.textChanged.connect(self._populate_table)
         self.filter_combo.currentTextChanged.connect(self._populate_table)
+        self.file_scope_combo.currentTextChanged.connect(self._populate_table)
         self._show_empty()
 
     def _show_empty(self) -> None:
@@ -183,6 +276,7 @@ class ExplorerPage(QWidget):
             self.filter_combo.clear()
             self.filter_combo.addItem("All categories")
             self.filter_combo.blockSignals(False)
+            self.file_scope_combo.setCurrentIndex(0)
             self.search_input.clear()
             self.scan_status_label.clear()
             self.scan_status_label.hide()
@@ -206,7 +300,7 @@ class ExplorerPage(QWidget):
         self.scan_status_label.clear()
         self.scan_status_label.hide()
         self.activity_panel.stop()
-        self.file_model.set_files(result.files)
+        self.file_model.set_files(result.files, discover_user_folders())
         self.table.setEnabled(True)
         self._populate_table()
         if result.inaccessible_items or result.skipped_directories:
@@ -254,7 +348,120 @@ class ExplorerPage(QWidget):
         self.activity_panel.set_cancelling()
 
     def _populate_table(self, *_: str) -> None:
-        self.proxy_model.set_filter(
-            self.filter_combo.currentText(),
-            self.search_input.text(),
+        self._filter_generation += 1
+        generation = self._filter_generation
+        if self._filter_cancel_event is not None:
+            self._filter_cancel_event.set()
+        if self._filter_future is not None:
+            self._filter_future.cancel()
+
+        category = self.filter_combo.currentText()
+        category = "" if category == "All categories" else category
+        query = self.search_input.text().strip()
+        personal_only = self.file_scope_combo.currentText() == "Personal files"
+        if not self.files:
+            self.file_model.set_visible_rows(range(len(self.files)))
+            self._applied_filter_generation = generation
+            self._filter_cancel_event = None
+            self._filter_future = None
+            self._filter_timer.stop()
+            return
+
+        cancel_event = Event()
+        self._filter_cancel_event = cancel_event
+        self._filter_future_generation = generation
+        self._filter_future = _FILTER_EXECUTOR.submit(
+            _filter_file_rows,
+            self.files,
+            self.file_model.personal_files,
+            category,
+            query,
+            personal_only,
+            self._sort_column,
+            self._sort_order == Qt.SortOrder.DescendingOrder,
+            cancel_event,
         )
+        self._filter_timer.start()
+
+    def _sort_by_column(self, column: int) -> None:
+        if column == self._sort_column:
+            self._sort_order = (
+                Qt.SortOrder.DescendingOrder
+                if self._sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+        else:
+            self._sort_column = column
+            self._sort_order = Qt.SortOrder.AscendingOrder
+        self.table.horizontalHeader().setSortIndicator(column, self._sort_order)
+        self._populate_table()
+
+    def _poll_filter(self) -> None:
+        future = self._filter_future
+        if future is None or not future.done():
+            return
+        generation = self._filter_future_generation
+        self._filter_timer.stop()
+        self._filter_future = None
+        if generation != self._filter_generation:
+            return
+
+        rows = future.result()
+        self._filter_cancel_event = None
+        if rows is not None:
+            self.file_model.set_visible_rows(rows)
+        self._applied_filter_generation = generation
+
+    def _show_context_menu(self, position: QPoint) -> None:
+        index = self.table.indexAt(position)
+        if not index.isValid():
+            return
+        self.table.selectRow(index.row())
+        source_index = self.proxy_model.mapToSource(index)
+        file = self.file_model.file_at(source_index.row())
+        menu = QMenu(self)
+        action = menu.addAction("Show in Windows Explorer")
+        action.triggered.connect(
+            lambda _checked=False, selected_file=file: self.show_in_windows_explorer(selected_file)
+        )
+        menu.popup(self.table.viewport().mapToGlobal(position))
+
+    def show_in_windows_explorer(self, file: ScannedFile) -> None:
+        try:
+            file_stat = os.stat(file.path)
+        except FileNotFoundError:
+            QMessageBox.information(
+                self,
+                "File unavailable",
+                "This file no longer exists at its scanned location.",
+            )
+            return
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "File unavailable",
+                f"Could not access this file: {error}",
+            )
+            return
+
+        if not stat.S_ISREG(file_stat.st_mode):
+            QMessageBox.warning(
+                self,
+                "File unavailable",
+                "The scanned path is no longer a regular file.",
+            )
+            return
+
+        started, _process_id = QProcess.startDetached(
+            "explorer.exe",
+            ["/select,", file.path],
+        )
+        if started:
+            return
+        folder = os.path.dirname(file.path)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder)):
+            QMessageBox.warning(
+                self,
+                "Could not open folder",
+                "Windows Explorer could not be started for this location.",
+            )

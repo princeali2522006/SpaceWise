@@ -2,11 +2,12 @@
 
 from functools import partial
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPaintEvent, QPainter, QPen
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPaintEvent, QPainter, QPen, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QComboBox,
@@ -55,6 +56,15 @@ class StatCard(QFrame):
 
     def set_value(self, value: str) -> None:
         self.value_label.setText(value)
+
+
+class SortableTableWidgetItem(QTableWidgetItem):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        value = self.data(Qt.ItemDataRole.UserRole)
+        other_value = other.data(Qt.ItemDataRole.UserRole)
+        if value is not None and other_value is not None:
+            return value < other_value
+        return super().__lt__(other)
 
 
 class DonutChart(QWidget):
@@ -125,6 +135,7 @@ class DashboardPage(QWidget):
         self.result: ScanResult | None = None
         self.selected_category: str | None = None
         self.category_buttons: dict[str, QPushButton] = {}
+        self._dashboard_tables: tuple[QTableWidget, ...] = ()
         self._build_ui()
         self.show_empty_state()
 
@@ -270,8 +281,13 @@ class DashboardPage(QWidget):
         self.category_largest.setShowGrid(False)
         self.category_largest.verticalHeader().hide()
         self.category_largest.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.category_largest.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.category_largest.setSortingEnabled(True)
+        self.category_largest.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
         self.category_largest.horizontalHeader().setStretchLastSection(True)
-        self.category_largest.setColumnWidth(0, 230)
+        self.category_largest.setColumnWidth(0, 195)
         self._fit_table_height(self.category_largest)
         detail_layout.addWidget(self.category_largest)
         self.open_explorer_button = QPushButton("Open category in Explorer")
@@ -294,9 +310,14 @@ class DashboardPage(QWidget):
         self.largest_table.setShowGrid(False)
         self.largest_table.verticalHeader().hide()
         self.largest_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.largest_table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.largest_table.setSortingEnabled(True)
+        self.largest_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
         self.largest_table.horizontalHeader().setStretchLastSection(True)
-        self.largest_table.setColumnWidth(0, 180)
-        self.largest_table.setColumnWidth(1, 110)
+        self.largest_table.setColumnWidth(0, 220)
+        self.largest_table.setColumnWidth(1, 90)
         self._fit_table_height(self.largest_table)
         self.largest_card.layout().addWidget(self.largest_table)
         result_layout.addWidget(self.category_card, 0, 0)
@@ -315,9 +336,15 @@ class DashboardPage(QWidget):
         self.subfolder_table.setShowGrid(False)
         self.subfolder_table.verticalHeader().hide()
         self.subfolder_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.subfolder_table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.subfolder_table.setSortingEnabled(True)
+        self.subfolder_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
         self.subfolder_table.horizontalHeader().setStretchLastSection(True)
-        self.subfolder_table.setColumnWidth(0, 260)
-        self.subfolder_table.setColumnWidth(1, 110)
+        self.subfolder_table.setColumnWidth(0, 320)
+        self.subfolder_table.setColumnWidth(1, 90)
+        self.subfolder_table.setColumnWidth(2, 90)
         self._fit_table_height(self.subfolder_table)
         self.subfolder_card.layout().addWidget(self.subfolder_table)
         result_layout.addWidget(self.subfolder_card, 1, 0, 1, 2)
@@ -329,7 +356,15 @@ class DashboardPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(self.content)
+        self.content_scroll_area = scroll
         outer.addWidget(scroll, 1)
+        self._dashboard_tables = (
+            self.category_largest,
+            self.largest_table,
+            self.subfolder_table,
+        )
+        for table in self._dashboard_tables:
+            table.viewport().installEventFilter(self)
 
     @staticmethod
     def _make_panel(title: str) -> QFrame:
@@ -349,6 +384,34 @@ class DashboardPage(QWidget):
         header_height = table.horizontalHeader().sizeHint().height()
         rows_height = sum(table.rowHeight(row) for row in range(table.rowCount()))
         table.setFixedHeight(header_height + rows_height + table.frameWidth() * 2 + 2)
+
+    @staticmethod
+    def _table_item(text: str, sort_value: str | int | float, tooltip: str) -> QTableWidgetItem:
+        item = SortableTableWidgetItem(text)
+        item.setData(Qt.ItemDataRole.UserRole, sort_value)
+        item.setToolTip(tooltip)
+        return item
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            event.type() == QEvent.Type.Wheel
+            and any(watched is table.viewport() for table in self._dashboard_tables)
+            and isinstance(event, QWheelEvent)
+        ):
+            scrollbar = self.content_scroll_area.verticalScrollBar()
+            if scrollbar.maximum() <= scrollbar.minimum():
+                return False
+            delta = event.pixelDelta().y()
+            if not delta:
+                delta = round(
+                    event.angleDelta().y()
+                    / 120
+                    * self.fontMetrics().height()
+                    * 3
+                )
+            scrollbar.setValue(scrollbar.value() - delta)
+            return True
+        return super().eventFilter(watched, event)
 
     def show_empty_state(self) -> None:
         self.empty_state.show()
@@ -465,7 +528,9 @@ class DashboardPage(QWidget):
             self.legend.addWidget(empty)
         self.legend.addStretch()
 
+        self.category_largest.setSortingEnabled(False)
         self.category_largest.setRowCount(0)
+        self.category_largest.setSortingEnabled(True)
         self._fit_table_height(self.category_largest)
         self.category_detail_title.setText("Select a category to see its details.")
         self.category_detail_summary.clear()
@@ -473,12 +538,27 @@ class DashboardPage(QWidget):
         self._populate_subfolders(result)
 
         largest = result.largest_files
+        self.largest_table.setSortingEnabled(False)
         self.largest_table.setRowCount(len(largest))
         for row, file in enumerate(largest):
-            for column, text in enumerate((file.name, format_size(file.size), file.path)):
-                item = QTableWidgetItem(text)
-                item.setToolTip(text)
-                self.largest_table.setItem(row, column, item)
+            self.largest_table.setItem(
+                row,
+                0,
+                self._table_item(file.name, file.name.casefold(), f"{file.name}\n{file.path}"),
+            )
+            self.largest_table.setItem(
+                row,
+                1,
+                self._table_item(format_size(file.size), file.size, f"{file.size:,} bytes"),
+            )
+            self.largest_table.setItem(
+                row,
+                2,
+                self._table_item(file.path, file.path.casefold(), file.path),
+            )
+        self.largest_table.setSortingEnabled(True)
+        if largest:
+            self.largest_table.sortItems(1, Qt.SortOrder.DescendingOrder)
         self._fit_table_height(self.largest_table)
 
         self.largest_hint.setText("The 10 largest files in this scan.")
@@ -511,14 +591,24 @@ class DashboardPage(QWidget):
         )
 
         largest = summary.largest_files
+        self.category_largest.setSortingEnabled(False)
         self.category_largest.setRowCount(len(largest))
         for row, file in enumerate(largest):
-            name_item = QTableWidgetItem(file.name)
-            name_item.setToolTip(file.path)
-            size_item = QTableWidgetItem(format_size(file.size))
-            size_item.setToolTip(file.path)
+            name_item = self._table_item(
+                file.name,
+                file.name.casefold(),
+                f"{file.name}\n{file.path}",
+            )
+            size_item = self._table_item(
+                format_size(file.size),
+                file.size,
+                f"{file.size:,} bytes\n{file.path}",
+            )
             self.category_largest.setItem(row, 0, name_item)
             self.category_largest.setItem(row, 1, size_item)
+        self.category_largest.setSortingEnabled(True)
+        if largest:
+            self.category_largest.sortItems(1, Qt.SortOrder.DescendingOrder)
         self._fit_table_height(self.category_largest)
         self.open_explorer_button.setEnabled(True)
 
@@ -528,14 +618,26 @@ class DashboardPage(QWidget):
 
     def _populate_subfolders(self, result: ScanResult) -> None:
         visible_folders = result.subfolders[:10]
+        self.subfolder_table.setSortingEnabled(False)
         self.subfolder_table.setRowCount(len(visible_folders))
         for row, folder in enumerate(visible_folders):
             percentage = folder.size / result.total_size * 100 if result.total_size else 0.0
             values = (folder.name, format_size(folder.size), f"{percentage:.1f}%", f"{folder.file_count:,}")
-            for column, text in enumerate(values):
-                item = QTableWidgetItem(text)
-                item.setToolTip(folder.path)
-                self.subfolder_table.setItem(row, column, item)
+            sort_values: tuple[str | int | float, ...] = (
+                folder.name.casefold(),
+                folder.size,
+                percentage,
+                folder.file_count,
+            )
+            for column, (text, sort_value) in enumerate(zip(values, sort_values)):
+                self.subfolder_table.setItem(
+                    row,
+                    column,
+                    self._table_item(text, sort_value, folder.path),
+                )
+        self.subfolder_table.setSortingEnabled(True)
+        if visible_folders:
+            self.subfolder_table.sortItems(1, Qt.SortOrder.DescendingOrder)
         self._fit_table_height(self.subfolder_table)
         if result.subfolders:
             shown = min(10, len(result.subfolders))

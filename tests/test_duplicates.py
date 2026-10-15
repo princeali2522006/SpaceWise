@@ -31,8 +31,8 @@ class DuplicateAnalysisTests(unittest.TestCase):
         unique = self.root / "unique.bin"
         first.write_bytes(b"same-data")
         second.write_bytes(b"same-data")
-        different.write_bytes(b"other-data")
-        unique.write_bytes(b"unique")
+        different.write_bytes(b"diff-data")
+        unique.write_bytes(b"unique!!!")
 
         result = analyze_duplicates(self._scan_files(first, second, different, unique))
 
@@ -42,8 +42,29 @@ class DuplicateAnalysisTests(unittest.TestCase):
         self.assertEqual(group.verified_copy_count, 2)
         self.assertEqual(group.recoverable_bytes, len(b"same-data"))
         self.assertEqual(result.potential_recoverable_bytes, len(b"same-data"))
-        self.assertEqual(result.hashed_files, 2)
-        self.assertEqual(result.candidate_files, 2)
+        self.assertEqual(result.hashed_files, 4)
+        self.assertEqual(result.candidate_files, 4)
+        self.assertNotIn(str(different), group.paths)
+
+    def test_three_identical_copies_include_every_path_and_count_only_extra_copies_as_savings(self) -> None:
+        copies = tuple(self.root / f"copy-{index}.bin" for index in range(3))
+        for path in copies:
+            path.write_bytes(b"identical-content")
+        unique = self.root / "unique.bin"
+        unique.write_bytes(b"a-different-size")
+
+        result = analyze_duplicates(self._scan_files(*copies, unique))
+
+        self.assertEqual(len(result.groups), 1)
+        group = result.groups[0]
+        self.assertEqual(set(group.paths), {str(path) for path in copies})
+        self.assertEqual(group.verified_copy_count, 3)
+        self.assertEqual(group.recoverable_bytes, 2 * len(b"identical-content"))
+        self.assertEqual(
+            result.potential_recoverable_bytes,
+            2 * len(b"identical-content"),
+        )
+        self.assertNotIn(str(unique), group.paths)
 
     def test_zero_byte_duplicates_do_not_add_recoverable_space(self) -> None:
         first = self.root / "empty-a"
@@ -88,7 +109,15 @@ class DuplicateAnalysisTests(unittest.TestCase):
 
         def change_after_read(file_handle, cancel_event):
             digest = original_hash(file_handle, cancel_event)
+            original_stat = first.stat()
             first.write_bytes(b"diff")
+            os.utime(
+                first,
+                ns=(
+                    original_stat.st_atime_ns,
+                    original_stat.st_mtime_ns + 10_000_000_000,
+                ),
+            )
             return digest
 
         with patch("core.duplicates._hash_stream", side_effect=change_after_read):
