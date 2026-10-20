@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStackedWidget,
     QTableView,
+    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -173,7 +174,9 @@ class MainWindow(QMainWindow):
                 padding: 8px 10px; border: 1px solid #dfe2e7; border-radius: 7px;
                 background: white; selection-background-color: #e9edf7;
             }
-            QLineEdit#searchInput:focus { border: 2px solid #8b919b; }
+            QLineEdit#searchInput:focus {
+                border: 1px solid #8ca4d7; box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16);
+            }
             QPushButton {
                 border-radius: 7px; padding: 9px 15px; font-weight: 600;
                 background: #ffffff; border: 1px solid #dfe2e7; color: #17191d;
@@ -181,19 +184,19 @@ class MainWindow(QMainWindow):
             QPushButton#primaryButton { background: #17191d; color: white; border: 1px solid #17191d; }
             QPushButton:enabled:hover { background: #f1f2f5; border-color: #c8ccd3; }
             QPushButton:enabled:pressed { background: #e5e7eb; border-color: #b9bec7; }
-            QPushButton:focus { border: 2px solid #858b95; }
+            QPushButton:focus { border: 1px solid #8ca4d7; box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16); }
             QPushButton:disabled {
                 color: #9ba1aa; background: #f1f2f4; border-color: #e1e3e7;
             }
             QPushButton#primaryButton:enabled:hover { background: #35383f; border-color: #35383f; }
             QPushButton#primaryButton:enabled:pressed { background: #4a4d54; border-color: #4a4d54; }
-            QPushButton#primaryButton:focus { border: 2px solid #858b95; }
+            QPushButton#primaryButton:focus { border: 1px solid #8ca4d7; box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16); }
             QPushButton#primaryButton:disabled {
                 color: #e4e5e7; background: #8e9299; border-color: #8e9299;
             }
             QPushButton#secondaryButton:enabled:hover { background: #f6f7f9; }
             QPushButton#secondaryButton:enabled:pressed { background: #e9ebef; }
-            QPushButton#secondaryButton:focus { border: 2px solid #858b95; }
+            QPushButton#secondaryButton:focus { border: 1px solid #8ca4d7; box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16); }
             QPushButton#thresholdButton {
                 font-size: 15pt; padding: 2px; border-radius: 7px;
             }
@@ -201,20 +204,84 @@ class MainWindow(QMainWindow):
                 padding: 7px 9px; border: 1px solid #dfe2e7; border-radius: 7px;
                 background: #ffffff; selection-background-color: #e9edf7;
             }
+            QComboBox::drop-down {
+                subcontrol-origin: padding; subcontrol-position: top right;
+                width: 26px; border: none; border-left: 1px solid #eceef1;
+                border-top-right-radius: 6px; border-bottom-right-radius: 6px;
+            }
+            QComboBox::down-arrow {
+                width: 10px; height: 10px; margin-right: 8px;
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%23656c76' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+            }
+            QComboBox QAbstractItemView {
+                background: #ffffff; color: #17191d;
+                border: 1px solid #dfe2e7; selection-background-color: #e9edf2;
+                selection-color: #17191d; outline: none;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                subcontrol-origin: border; width: 20px; border: none;
+                background: transparent;
+            }
+            QSpinBox::up-button {
+                subcontrol-position: top right; border-top-right-radius: 6px;
+            }
+            QSpinBox::down-button {
+                subcontrol-position: bottom right; border-bottom-right-radius: 6px;
+            }
+            QSpinBox::up-arrow {
+                width: 0; height: 0;
+                border-left: 4px solid transparent; border-right: 4px solid transparent;
+                border-bottom: 5px solid #656c76;
+            }
+            QSpinBox::down-arrow {
+                width: 0; height: 0;
+                border-left: 4px solid transparent; border-right: 4px solid transparent;
+                border-top: 5px solid #656c76;
+            }
+            QSpinBox::up-button:enabled:hover, QSpinBox::down-button:enabled:hover {
+                background: #f1f2f5;
+            }
             QPlainTextEdit {
                 padding: 6px 8px; border: 1px solid #dfe2e7; border-radius: 7px;
                 background: #ffffff;
             }
             QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {
-                border: 2px solid #858b95;
+                border: 1px solid #8ca4d7;
+                box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16);
             }
             QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QPlainTextEdit:disabled {
                 color: #9ba1aa; background: #f1f2f4; border-color: #e1e3e7;
             }
+            QHeaderView::section {
+                padding: 6px 8px;
+                background: #f3f5f7;
+                border: 0;
+                border-bottom: 1px solid #e7e9ed;
+            }
+            QTableView::item, QTableWidget::item {
+                padding: 4px 6px;
+            }
             QComboBox:enabled:hover { border-color: #c8ccd3; background: #fafbfc; }
+            QScrollBar:vertical, QScrollBar:horizontal {
+                background: #f7f8fa; border: 1px solid #e7e9ed; border-radius: 5px;
+            }
+            QScrollBar:vertical { width: 12px; margin: 2px; }
+            QScrollBar:horizontal { height: 12px; margin: 2px; }
+            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+                background: #c9cdd4; border-radius: 4px; min-height: 24px; min-width: 24px;
+            }
+            QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+                background: #aeb4bd;
+            }
+            QScrollBar::add-line, QScrollBar::sub-line {
+                border: none; background: #f1f2f5;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 10px; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 10px; }
             QCheckBox:enabled:hover { color: #17191d; }
             QCheckBox:focus { border: 1px solid #858b95; border-radius: 3px; }
             QCheckBox:disabled { color: #9ba1aa; }
+            QCheckBox::indicator:hover { border-color: #858b95; background: #f1f2f5; }
             QLabel#pathBanner {
                 padding: 10px 12px; background: #f7f8fa; border: 1px solid #e7e9ed;
                 border-radius: 7px; color: #525a65;
@@ -239,6 +306,7 @@ class MainWindow(QMainWindow):
             QTableView#cleanupRecommendationsTable::item:hover {
                 background: #f3f4f6; color: #17191d;
             }
+            QTableWidget::item:hover { background: #f3f4f6; color: #17191d; }
             QTableView::item:selected, QTableWidget::item:selected {
                 background: #e9edf7; color: #17191d;
             }
@@ -263,6 +331,9 @@ class MainWindow(QMainWindow):
                 header.setObjectName("sortableHeader")
                 header.setCursor(Qt.CursorShape.PointingHandCursor)
         for table in self.findChildren(QTableView):
+            table.setMouseTracking(True)
+            table.viewport().setMouseTracking(True)
+        for table in self.findChildren(QTableWidget):
             table.setMouseTracking(True)
             table.viewport().setMouseTracking(True)
 
@@ -400,6 +471,7 @@ class MainWindow(QMainWindow):
 
         personal_roots = discover_user_folders() if personal_only else None
         self.duplicates.set_analyzing()
+        self.cleanup.set_duplicate_pending()
         self.duplicate_worker = DuplicateWorker(
             self.scan_result.files,
             personal_roots=personal_roots,
@@ -420,9 +492,6 @@ class MainWindow(QMainWindow):
     def analyze_cleanup(self, age_threshold_days: int, large_file_threshold_bytes: int) -> None:
         if self.scan_worker is not None and self.scan_worker.isRunning():
             self.cleanup.set_failed("Wait for the active scan to finish first.")
-            return
-        if self.duplicate_worker is not None and self.duplicate_worker.isRunning():
-            self.cleanup.set_failed("Wait for duplicate analysis to finish first.")
             return
         if self.cleanup_worker is not None and self.cleanup_worker.isRunning():
             return
@@ -456,6 +525,8 @@ class MainWindow(QMainWindow):
             self.cleanup.set_failed("The analyzer returned an unexpected result.")
             return
         self.cleanup.set_result(result)
+        if self.duplicates.analysis is not None:
+            self.cleanup.set_duplicate_analysis(self.duplicates.analysis)
 
     def _cleanup_progress(self, progress: object) -> None:
         if isinstance(progress, RecommendationProgress):
@@ -475,8 +546,7 @@ class MainWindow(QMainWindow):
             self.duplicates.set_failed("The analyzer returned an unexpected result.")
             return
         self.duplicates.set_result(result)
-        if self.scan_result is not None:
-            self.cleanup.set_scan_result(self.scan_result)
+        self.cleanup.set_duplicate_analysis(result)
 
     def _duplicates_progress(self, progress: object) -> None:
         if isinstance(progress, DuplicateProgress):

@@ -49,7 +49,7 @@ _FILTER_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="spacewi
 
 def _filter_file_rows(
     files: tuple[ScannedFile, ...],
-    personal_files: bytes,
+    personal_roots: tuple[str, ...],
     category: str,
     query: str,
     personal_only: bool,
@@ -58,6 +58,12 @@ def _filter_file_rows(
     cancel_event: Event,
 ) -> tuple[int, ...] | None:
     folded_query = query.casefold()
+    if personal_only and not personal_roots:
+        personal_roots = discover_user_folders()
+    normalized_roots = tuple(_normalized_path(root) for root in personal_roots)
+    root_prefixes = tuple(
+        root if root.endswith(os.sep) else root + os.sep for root in normalized_roots
+    )
     matching_rows: list[int] = []
     for row, file in enumerate(files):
         if row % 1024 == 0 and cancel_event.is_set():
@@ -66,8 +72,13 @@ def _filter_file_rows(
             continue
         if folded_query and folded_query not in file.name.casefold():
             continue
-        if personal_only and not personal_files[row]:
-            continue
+        if personal_only:
+            path = _normalized_path(file.path)
+            if not any(
+                path == root or path.startswith(prefix)
+                for root, prefix in zip(normalized_roots, root_prefixes)
+            ):
+                continue
         matching_rows.append(row)
 
     sort_keys = (
@@ -87,7 +98,6 @@ class ScannedFilesModel(QAbstractTableModel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.files: tuple[ScannedFile, ...] = ()
-        self.personal_files = b""
         self.visible_rows: Sequence[int] = range(0)
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -132,29 +142,10 @@ class ScannedFilesModel(QAbstractTableModel):
     def file_at(self, row: int) -> ScannedFile:
         return self.files[self.visible_rows[row]]
 
-    def set_files(
-        self,
-        files: tuple[ScannedFile, ...],
-        personal_roots: tuple[str, ...] = (),
-    ) -> None:
-        roots = tuple(_normalized_path(root) for root in personal_roots)
-        root_prefixes = tuple(
-            root if root.endswith(os.sep) else root + os.sep for root in roots
-        )
+    def set_files(self, files: tuple[ScannedFile, ...]) -> None:
         self.beginResetModel()
         self.files = files
         self.visible_rows = range(len(files))
-        self.personal_files = (
-            bytes(
-                any(
-                    path == root or path.startswith(prefix)
-                    for root, prefix in zip(roots, root_prefixes)
-                )
-                for path in (_normalized_path(file.path) for file in files)
-            )
-            if roots
-            else bytes(len(files))
-        )
         self.endResetModel()
 
     def set_visible_rows(self, rows: Sequence[int]) -> None:
@@ -176,6 +167,7 @@ class ExplorerPage(QWidget):
         super().__init__()
         self.files: tuple[ScannedFile, ...] = ()
         self.last_scan_root: str | None = None
+        self._personal_roots: tuple[str, ...] = ()
         self._filter_generation = 0
         self._applied_filter_generation = 0
         self._filter_cancel_event: Event | None = None
@@ -258,6 +250,7 @@ class ExplorerPage(QWidget):
         layout.addWidget(self.table, 1)
 
         self.search_input.textChanged.connect(self._populate_table)
+        self.search_input.returnPressed.connect(self._handle_search_return)
         self.filter_combo.currentTextChanged.connect(self._populate_table)
         self.file_scope_combo.currentTextChanged.connect(self._populate_table)
         self._show_empty()
@@ -292,7 +285,7 @@ class ExplorerPage(QWidget):
         self.filter_combo.blockSignals(True)
         self.filter_combo.clear()
         self.filter_combo.addItem("All categories")
-        self.filter_combo.addItems(sorted({file.category for file in result.files}))
+        self.filter_combo.addItems(category.name for category in result.categories)
         previous_index = self.filter_combo.findText(previous_category)
         if previous_index >= 0:
             self.filter_combo.setCurrentIndex(previous_index)
@@ -300,25 +293,45 @@ class ExplorerPage(QWidget):
         self.scan_status_label.clear()
         self.scan_status_label.hide()
         self.activity_panel.stop()
-        self.file_model.set_files(result.files, discover_user_folders())
+        self.file_model.set_files(result.files)
+        self._personal_roots = ()
         self.table.setEnabled(True)
         self._populate_table()
-        if result.inaccessible_items or result.skipped_directories:
+        if (
+            result.inaccessible_items
+            or result.skipped_directories
+            or result.skipped_files
+            or result.hard_link_paths
+        ):
+            notes: list[str] = []
+            if result.inaccessible_items or result.skipped_directories or result.skipped_files:
+                notes.append(
+                    f"Partial scan: {result.inaccessible_directories:,} inaccessible folder(s), "
+                    f"{result.inaccessible_items:,} inaccessible item(s), "
+                    f"{result.skipped_directories:,} linked/reparse/other-volume folder(s), "
+                    f"{result.skipped_files:,} linked/reparse file(s) skipped."
+                )
+            if result.hard_link_paths:
+                notes.append(
+                    f"Logical file totals include {result.hard_link_paths:,} additional hard-link "
+                    "path(s) sharing file contents."
+                )
             self.scan_status_label.setText(
-                f"Partial scan: {result.inaccessible_directories:,} inaccessible folder(s), "
-                f"{result.inaccessible_items:,} inaccessible item(s), "
-                f"{result.skipped_directories:,} linked, reparse-point, or other-volume folder(s) skipped."
+                " ".join(notes)
             )
             self.scan_status_label.show()
+        else:
+            self.scan_status_label.clear()
+            self.scan_status_label.hide()
 
     def set_scanning(self) -> None:
         self.scan_status_label.setText(
-            "Analyzing your storage — the last completed results remain available until this scan finishes."
+            "Scanning… the last completed results remain available until this scan finishes."
             if self.files
-            else "Analyzing your storage — no completed scan yet."
+            else "Scanning… no completed scan yet."
         )
         self.scan_status_label.show()
-        self.activity_panel.start("Analyzing your storage", "Files scanned so far: 0")
+        self.activity_panel.start("Scanning…", "Files discovered so far: 0")
 
     def set_scan_failed(self, folder: str, message: str) -> None:
         self.activity_panel.stop()
@@ -328,9 +341,12 @@ class ExplorerPage(QWidget):
         self.scan_status_label.show()
 
     def set_scan_progress(self, progress: ScanProgress) -> None:
+        folder = os.path.basename(progress.current_directory.rstrip("\\/")) or progress.current_directory
         self.activity_panel.set_details(
-            f"Files scanned so far: {progress.files_scanned:,}"
+            f"Files discovered: {progress.files_scanned:,}"
+            + (f" · Current folder: {folder}" if folder else "")
         )
+        self.activity_panel.details_label.setToolTip(progress.current_directory)
 
     def set_scan_cancelled(self, scope: str, message: str) -> None:
         self.activity_panel.stop()
@@ -346,6 +362,16 @@ class ExplorerPage(QWidget):
 
     def set_cancelling(self) -> None:
         self.activity_panel.set_cancelling()
+
+    def _handle_search_return(self) -> None:
+        query = self.search_input.text().strip()
+        if query:
+            self.scan_status_label.setText(f"Search applied: showing matching file results for '{query}'.")
+            self.scan_status_label.show()
+        else:
+            self.scan_status_label.clear()
+            self.scan_status_label.hide()
+        self._populate_table()
 
     def _populate_table(self, *_: str) -> None:
         self._filter_generation += 1
@@ -373,7 +399,7 @@ class ExplorerPage(QWidget):
         self._filter_future = _FILTER_EXECUTOR.submit(
             _filter_file_rows,
             self.files,
-            self.file_model.personal_files,
+            self._personal_roots,
             category,
             query,
             personal_only,

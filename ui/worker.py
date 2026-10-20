@@ -5,12 +5,15 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QThread, Signal
 
-from core.duplicates import DuplicateAnalysisCancelled, analyze_duplicates
 from core.recommendations import (
     RecommendationAnalysisCancelled,
     build_cleanup_recommendations,
 )
-from core.duplicates import DuplicateAnalysis, DuplicateAnalysisCancelled, analyze_duplicates
+from core.duplicates import (
+    DuplicateAnalysis,
+    DuplicateAnalysisCancelled,
+    analyze_duplicates,
+)
 from core.scanner import DriveUsage, ScannedFile, ScanCancelledError, scan_folders
 
 

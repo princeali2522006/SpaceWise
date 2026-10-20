@@ -11,7 +11,12 @@ from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
 from core.discovery import LocalDrive
-from core.duplicates import DuplicateAnalysis, DuplicateGroup, UnverifiedFile
+from core.duplicates import (
+    DuplicateAnalysis,
+    DuplicateGroup,
+    DuplicateProgress,
+    UnverifiedFile,
+)
 from core.scanner import DriveUsage, ScanCancelledError, scan_folder
 from ui.duplicates_page import DuplicatesPage
 from ui.main_window import MainWindow
@@ -25,11 +30,17 @@ class ScanModeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)
+        self.cache_path_patcher = patch(
+            "core.duplicates._default_cache_path",
+            return_value=str(self.root / "application-cache" / "hashes.sqlite3"),
+        )
+        self.cache_path_patcher.start()
         (self.root / "notes.txt").write_text("read-only sample", encoding="utf-8")
         (self.root / "Documents").mkdir()
         (self.root / "Documents" / "annual.txt").write_text("nested sample", encoding="utf-8")
 
     def tearDown(self) -> None:
+        self.cache_path_patcher.stop()
         self.temporary_directory.cleanup()
 
     def dispose_widget(self, widget: QWidget) -> None:
@@ -95,7 +106,10 @@ class ScanModeTests(unittest.TestCase):
         self.assertEqual(result.scan_scope, f"Drive scan: {self.root}")
         self.assertEqual(result.drive_usage.total, 10_000)
         self.assertLess(result.total_size, result.drive_usage.used)
-        self.assertIn("Scanned-file size", window.dashboard.stats[1].caption_label.text())
+        self.assertIn(
+            "Logical size of scanned paths",
+            window.dashboard.stats[1].caption_label.text(),
+        )
         self.assertIn("capacity (Windows)", window.dashboard.drive_usage_label.text())
         self.assertEqual(window.dashboard.result, result)
         self.assertEqual(window.explorer.files, result.files)
@@ -218,6 +232,34 @@ class ScanModeTests(unittest.TestCase):
             page.results_model.index(0, 0),
             Qt.ItemDataRole.ToolTipRole,
         ).lower())
+
+    def test_duplicate_progress_shows_stage_counters_and_no_estimate(self) -> None:
+        page = DuplicatesPage()
+        self.addCleanup(self.dispose_widget, page)
+        page.set_analyzing()
+        page.set_progress(
+            DuplicateProgress(
+                files_checked=17,
+                candidate_files=100,
+                elapsed_seconds=9.2,
+                hashed_files=5,
+                bytes_processed=2 * 1024**2,
+                skipped_files=2,
+                stage="verifying SHA-256",
+                cached_files_reused=3,
+            )
+        )
+
+        self.assertEqual(
+            page.progress_status.text(),
+            "Verifying candidate contents with full SHA-256",
+        )
+        details = page.progress_details.text()
+        for expected in ("17", "100", "5", "2.0 MB", "2", "3", "9.2 s"):
+            self.assertIn(expected, details)
+        self.assertEqual(page.progress_bar.minimum(), 0)
+        self.assertEqual(page.progress_bar.maximum(), 0)
+        self.assertNotIn("%", details)
 
     def test_duplicate_group_selection_shows_all_paths_and_copy_action(self) -> None:
         page = DuplicatesPage()

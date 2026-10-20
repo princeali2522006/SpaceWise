@@ -1,6 +1,6 @@
 """Read-only cleanup review opportunities."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 import os
 import re
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.duplicates import DuplicateAnalysis
 from core.recommendations import (
     MIN_LARGE_FILE_THRESHOLD_BYTES,
     CleanupRecommendations,
@@ -289,6 +290,10 @@ class CleanupPage(QWidget):
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
         self.safety_label = QLabel(
+            "Large files meet the size threshold; older installers meet the age threshold; "
+            "verified duplicates have identical SHA-256 contents. "
+            "Size and age thresholds affect only their own categories, never verified duplicates. "
+            "A file may appear in more than one category. "
             "Older does not mean unused, and large does not mean unwanted. "
             "Important project, virtual-machine, or system files should not be treated as safe to remove. "
             "Potential savings are estimated only for verified duplicate copies."
@@ -332,16 +337,16 @@ class CleanupPage(QWidget):
         self.recommendation_table.setShowGrid(False)
         self.recommendation_table.setSortingEnabled(True)
         self.recommendation_table.verticalHeader().hide()
+        self.recommendation_table.verticalHeader().setDefaultSectionSize(30)
+        self.recommendation_table.setWordWrap(False)
         header = self.recommendation_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.recommendation_table.setColumnWidth(0, 108)
-        self.recommendation_table.setColumnWidth(2, 84)
-        self.recommendation_table.setColumnWidth(3, 128)
-        self.recommendation_table.setColumnWidth(4, 122)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        self.recommendation_table.setColumnWidth(0, 160)
+        self.recommendation_table.setColumnWidth(1, 340)
+        self.recommendation_table.setColumnWidth(2, 105)
+        self.recommendation_table.setColumnWidth(3, 145)
+        self.recommendation_table.setColumnWidth(4, 150)
         self.recommendation_table.selectionModel().currentChanged.connect(
             self._show_selected_details
         )
@@ -366,9 +371,9 @@ class CleanupPage(QWidget):
         layout.addWidget(self.detail_warning_label)
         self.detail_paths = QPlainTextEdit()
         self.detail_paths.setReadOnly(True)
-        self.detail_paths.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self.detail_paths.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.detail_paths.setMaximumHeight(86)
+        self.detail_paths.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.detail_paths.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.detail_paths.setMaximumHeight(110)
         self.detail_paths.setAccessibleName("Complete recommendation path")
         layout.addWidget(self.detail_paths)
         path_actions = QHBoxLayout()
@@ -523,6 +528,41 @@ class CleanupPage(QWidget):
             )
         )
 
+    def set_duplicate_analysis(self, analysis: DuplicateAnalysis) -> None:
+        if self._all_recommendations is None:
+            return
+        verified_groups = tuple(
+            group for group in analysis.groups if group.verified_copy_count >= 2
+        )
+        self._all_recommendations = replace(
+            self._all_recommendations,
+            verified_duplicates=verified_groups,
+            duplicate_analysis_pending=False,
+        )
+        self._render_recommendations(
+            filter_cleanup_recommendations(
+                self._all_recommendations,
+                age_threshold_days=self.age_threshold.value(),
+                large_file_threshold_bytes=self._large_threshold_bytes,
+            )
+        )
+
+    def set_duplicate_pending(self) -> None:
+        if self._all_recommendations is None:
+            return
+        self._all_recommendations = replace(
+            self._all_recommendations,
+            verified_duplicates=(),
+            duplicate_analysis_pending=True,
+        )
+        self._render_recommendations(
+            filter_cleanup_recommendations(
+                self._all_recommendations,
+                age_threshold_days=self.age_threshold.value(),
+                large_file_threshold_bytes=self._large_threshold_bytes,
+            )
+        )
+
     def _rows_for(self, result: CleanupRecommendations) -> tuple[_RecommendationRow, ...]:
         rows: list[_RecommendationRow] = []
         for group in result.verified_duplicates:
@@ -599,14 +639,16 @@ class CleanupPage(QWidget):
         self.recommendation_model.set_rows(rows)
         self._apply_category_filter()
         self.summary_label.setText(
-            f"{len(result.verified_duplicates):,} verified duplicate group(s) · "
-            f"{format_size(result.duplicate_recoverable_bytes)} potential duplicate savings · "
-            f"{len(result.old_installers):,} older installer(s) · "
-            f"{len(result.large_files):,} large file(s) for review."
+            f"Older installers: {len(result.old_installers):,} "
+            f"(at least {self.age_threshold.value():,} days old) · "
+            f"Large files: {len(result.large_files):,} "
+            f"(at least {format_large_threshold(self._large_threshold_bytes)}) · "
+            f"Verified duplicate groups: {len(result.verified_duplicates):,} · "
+            f"Potential duplicate savings: {format_size(result.duplicate_recoverable_bytes)}."
         )
         duplicate_note = (
-            " Duplicate analysis has not been run; verified duplicates are not included. "
-            "Use Find Duplicates on the Duplicates page to add verified results."
+            " Duplicate analysis is pending or incomplete; verified duplicates are not included. "
+            "Run or complete Find Duplicates on the Duplicates page to add verified results."
             if result.duplicate_analysis_pending
             else ""
         )
@@ -666,9 +708,15 @@ class CleanupPage(QWidget):
         self.detail_reason_label.setText(row.reason)
         self.detail_condition_label.setText(row.condition)
         self.detail_warning_label.setText(row.warning)
-        paths_text = "\n".join(row.paths)
+        paths_text = (
+            "\n".join(f"• {path}" for path in row.paths)
+            if len(row.paths) > 1
+            else row.paths[0]
+            if row.paths
+            else ""
+        )
         self.detail_paths.setPlainText(paths_text)
-        self.detail_paths.setToolTip(paths_text)
+        self.detail_paths.setToolTip("\n".join(row.paths))
         self.path_selector.blockSignals(True)
         self.path_selector.clear()
         if len(row.paths) > 1:

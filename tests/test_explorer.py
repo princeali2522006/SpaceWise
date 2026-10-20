@@ -91,11 +91,8 @@ class ExplorerAndDashboardTests(unittest.TestCase):
         result = scan_folder(self.root)
 
         explorer = ExplorerPage()
-        with patch(
-            "ui.explorer_page.discover_user_folders",
-            return_value=(str(personal_root),),
-        ):
-            explorer.set_result(result)
+        explorer.set_result(result)
+        explorer._personal_roots = (str(personal_root),)
         explorer.filter_combo.setCurrentText("Documents")
         explorer.search_input.setText("annual-report")
         self._wait_for_filter(explorer)
@@ -265,7 +262,7 @@ class ExplorerAndDashboardTests(unittest.TestCase):
 
         self.assertIn(str(self.root), explorer.path_label.text())
         self.assertNotIn(str(self.root), explorer.scan_status_label.text())
-        self.assertIn("Analyzing your storage", explorer.scan_status_label.text())
+        self.assertIn("Scanning", explorer.scan_status_label.text())
         self.assertIn("last completed results", explorer.scan_status_label.text())
 
     def test_partial_results_are_labeled_and_zero_byte_categories_stay_visible(self) -> None:
@@ -350,12 +347,16 @@ class ExplorerAndDashboardTests(unittest.TestCase):
             )
             for index in range(10)
         )
+        nested = self.root / "nested"
+        nested.mkdir()
+        (nested / "inside.bin").write_bytes(b"nested")
+        dashboard_result = scan_folder(self.root)
         dashboard = DashboardPage()
         dashboard.set_result(
             replace(
-                self.result,
+                dashboard_result,
                 largest_files=long_files,
-                categories=(replace(self.result.categories[0], largest_files=long_files),),
+                categories=(replace(dashboard_result.categories[0], largest_files=long_files),),
             )
         )
         dashboard.resize(980, 620)
@@ -374,6 +375,20 @@ class ExplorerAndDashboardTests(unittest.TestCase):
             original_width = table.columnWidth(0)
             table.setColumnWidth(0, original_width + 10)
             self.assertEqual(table.columnWidth(0), original_width + 10)
+
+        centered = Qt.AlignmentFlag.AlignCenter
+        self.assertEqual(
+            dashboard.largest_table.horizontalHeader().defaultAlignment(),
+            centered,
+        )
+        self.assertEqual(
+            dashboard.largest_table.item(0, 1).textAlignment(),
+            int(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter),
+        )
+        self.assertEqual(
+            dashboard.subfolder_table.item(0, 1).textAlignment(),
+            int(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter),
+        )
 
         scrollbar = dashboard.content_scroll_area.verticalScrollBar()
         self.assertGreater(scrollbar.maximum(), 0)
@@ -410,12 +425,25 @@ class ExplorerAndDashboardTests(unittest.TestCase):
 
         self.assertEqual(
             dashboard.progress_label.text(),
-            "Files scanned so far: 42",
+            "Files discovered: 42",
         )
         self.assertEqual(dashboard.progress_bar.minimum(), 0)
         self.assertEqual(dashboard.progress_bar.maximum(), 0)
         self.assertNotIn(str(self.root), dashboard.progress_label.text())
-        self.assertIn("Analyzing your storage", dashboard.activity_panel.status_label.text())
+        self.assertIn("Scanning", dashboard.activity_panel.status_label.text())
+        location = self.root / "nested" / "current"
+        dashboard.set_scan_progress(
+            ScanProgress(
+                files_scanned=43,
+                elapsed_seconds=1.3,
+                current_directory=str(location),
+            )
+        )
+        self.assertIn("Current folder: current", dashboard.progress_label.text())
+        self.assertEqual(
+            dashboard.progress_label.toolTip(),
+            str(location),
+        )
         dashboard.set_scanning(False)
 
 

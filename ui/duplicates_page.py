@@ -196,7 +196,9 @@ class DuplicatesPage(QWidget):
         title = QLabel("Duplicates")
         title.setObjectName("pageTitle")
         description = QLabel(
-            "Compare equal-size files with SHA-256. Analysis is read-only; no copy is selected for removal."
+            "Screen equal-size files, then verify likely matches with full SHA-256. "
+            "Cached hashes are reused only when file identity, size, timestamps, and a content sample match; "
+            "edits that preserve all of these can evade invalidation. Analysis is read-only."
         )
         description.setObjectName("mutedText")
         description.setWordWrap(True)
@@ -269,6 +271,7 @@ class DuplicatesPage(QWidget):
         self.groups_table.setColumnWidth(2, 180)
         self.groups_table.setColumnWidth(3, 100)
         self.groups_table.setColumnWidth(4, 150)
+        self.groups_table.setMinimumHeight(150)
         self.groups_table.selectionModel().currentRowChanged.connect(
             self._show_selected_result
         )
@@ -294,6 +297,7 @@ class DuplicatesPage(QWidget):
         self.paths_table.horizontalHeader().setStretchLastSection(True)
         self.paths_table.setColumnWidth(0, 480)
         self.paths_table.setColumnWidth(1, 190)
+        self.paths_table.setMinimumHeight(150)
         self.paths_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.paths_table.customContextMenuRequested.connect(
             self._show_path_context_menu
@@ -321,9 +325,11 @@ class DuplicatesPage(QWidget):
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.groups_table)
         splitter.addWidget(detail)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([360, 260])
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([240, 420])
         layout.addWidget(splitter, 1)
         self._set_path_actions_enabled(False)
         self.set_scan_result(None)
@@ -377,12 +383,39 @@ class DuplicatesPage(QWidget):
             ),
         )
         self.status_label.setText(
-            "Hashing is limited to scanned files that share the same byte size."
+            "Same-size files are screened first. Large files can take much longer than small files; "
+            "no completion-time estimate is shown."
         )
 
     def set_progress(self, progress: DuplicateProgress) -> None:
+        stages = {
+            "grouping": "Grouping scanned files by size",
+            "validating candidates": "Validating same-size candidates",
+            "sampling candidates": "Comparing bounded content samples",
+            "verifying SHA-256": "Verifying candidate contents with full SHA-256",
+            "validating file paths": "Rechecking candidate paths",
+            "finalizing results": "Sorting verified results",
+            "complete": "Analysis complete",
+        }
+        self.activity_panel.status_label.setText(stages.get(progress.stage, progress.stage))
+        stage_specific = {
+            "sampling candidates": "Sampled candidates: ",
+            "verifying SHA-256": "SHA-256 verification: ",
+            "validating candidates": "Candidate validation: ",
+            "validating file paths": "Path validation: ",
+            "grouping": "Grouping files by size: ",
+            "finalizing results": "Finalizing results: ",
+        }
+        label_prefix = stage_specific.get(progress.stage, "Progress: ")
         self.activity_panel.set_details(
-            f"Files checked: {progress.files_checked:,} of {progress.candidate_files:,} candidates"
+            f"{label_prefix}"
+            f"Candidates: {progress.candidate_files:,} · "
+            f"Processed: {progress.files_checked:,} · "
+            f"SHA-256 hashed: {progress.hashed_files:,} · "
+            f"Read: {format_size(progress.bytes_processed)} · "
+            f"Skipped: {progress.skipped_files:,} · "
+            f"Cache reused: {progress.cached_files_reused:,} · "
+            f"Elapsed: {progress.elapsed_seconds:.1f} s"
         )
 
     def set_result(self, result: DuplicateAnalysis) -> None:
@@ -396,7 +429,8 @@ class DuplicatesPage(QWidget):
         self.status_label.setToolTip("")
         self.summary_label.setText(
             f"{len(result.groups):,} verified duplicate group(s) · "
-            f"{format_size(result.potential_recoverable_bytes)} estimated potential recoverable space"
+            f"{format_size(result.potential_recoverable_bytes)} estimated potential recoverable space · "
+            f"Total analysis time: {result.elapsed_seconds:.1f} s"
         )
         if result.groups and any(
             group.verified_copy_count < len(group.paths) for group in result.groups
@@ -406,10 +440,14 @@ class DuplicatesPage(QWidget):
             hard_link_note = ""
         self.status_label.setText(
             f"Checked {result.candidate_files:,} same-size candidate file(s); "
-            f"hashed {result.hashed_files:,} distinct file(s). "
-            f"{len(result.unverified_files):,} file(s) could not be verified. "
+            f"SHA-256 hashed {result.hashed_files:,} distinct file(s), "
+            f"reused {result.cached_files_reused:,} cached hash(es), and read "
+            f"{format_size(result.bytes_processed)}. "
+            f"{result.skipped_files:,} candidate file(s) were skipped or inaccessible; "
+            f"{len(result.unverified_files):,} are listed as unverified. "
             "Savings are estimates, not guaranteed recoverable space. "
-            "Files are verified by SHA-256 content, not filename or size alone. "
+            "Groups are verified by SHA-256 content; metadata cache reuse can miss edits that preserve "
+            "file identity, size, timestamps, and sampled content. "
             "Zero-byte files contribute no savings." + hard_link_note
         )
         if result.groups and result.unverified_files:

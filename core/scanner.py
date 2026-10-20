@@ -17,6 +17,7 @@ from core.categorizer import categorize_file
 class ScanProgress:
     files_scanned: int
     elapsed_seconds: float
+    current_directory: str = ""
 
 
 ProgressCallback = Callable[[ScanProgress], None]
@@ -69,6 +70,8 @@ class ScanResult:
     scan_scope: str
     scan_roots: tuple[str, ...]
     drive_usage: DriveUsage | None = None
+    hard_link_paths: int = 0
+    skipped_files: int = 0
 
     @property
     def total_size(self) -> int:
@@ -172,14 +175,26 @@ def scan_folders(
     seen_directories: set[str] = set()
     seen_inaccessible: set[str] = set()
     seen_skipped_directories: set[str] = set()
+    seen_skipped_files: set[str] = set()
+    seen_file_identities: set[tuple[int, int]] = set()
+    hard_link_paths = 0
+    skipped_files = 0
+    scanned_size = 0
     inaccessible_items = 0
     inaccessible_directories = 0
     skipped_directories = 0
     last_progress_at = 0.0
+    last_current_directory = ""
 
     def check_cancelled() -> None:
         if cancel_event is not None and cancel_event.is_set():
             raise ScanCancelledError("Scan cancelled. The last completed scan is unchanged.")
+
+    def checked_files(items: Iterable[ScannedFile]) -> Iterable[ScannedFile]:
+        for index, item in enumerate(items):
+            if index % 1024 == 0:
+                check_cancelled()
+            yield item
 
     def record_inaccessible(path: str, *, directory: bool = False) -> None:
         nonlocal inaccessible_items, inaccessible_directories
@@ -198,16 +213,26 @@ def scan_folders(
             seen_skipped_directories.add(key)
             skipped_directories += 1
 
-    def report_progress(*, force: bool = False) -> None:
-        nonlocal last_progress_at
+    def record_skipped_file(path: str) -> None:
+        nonlocal skipped_files
+        key = _path_key(path)
+        if key not in seen_skipped_files:
+            seen_skipped_files.add(key)
+            skipped_files += 1
+
+    def report_progress(*, force: bool = False, current_directory: str = "") -> None:
+        nonlocal last_progress_at, last_current_directory
         if progress_callback is None:
             return
+        if current_directory:
+            last_current_directory = _display_path(current_directory)
         now = time.monotonic()
-        if force or now - last_progress_at >= 0.15:
+        if force or now - last_progress_at >= 0.5:
             progress_callback(
                 ScanProgress(
                     files_scanned=len(files),
                     elapsed_seconds=time.perf_counter() - started,
+                    current_directory=last_current_directory,
                 )
             )
             last_progress_at = now
@@ -250,7 +275,7 @@ def scan_folders(
                 record_inaccessible(current, directory=True)
                 continue
             seen_directories.add(current_key)
-            report_progress()
+            report_progress(current_directory=current)
 
             with entries:
                 try:
@@ -258,18 +283,20 @@ def scan_folders(
                         check_cancelled()
                         try:
                             if entry.is_symlink() or _is_reparse_point(entry):
-                                entry_attributes = getattr(
-                                    entry.stat(follow_symlinks=False),
-                                    "st_file_attributes",
-                                    0,
-                                )
+                                entry_stat = entry.stat(follow_symlinks=False)
                                 directory_attribute = getattr(
                                     stat,
                                     "FILE_ATTRIBUTE_DIRECTORY",
                                     0x10,
                                 )
-                                if entry_attributes & directory_attribute:
+                                is_directory = stat.S_ISDIR(entry_stat.st_mode) or bool(
+                                    getattr(entry_stat, "st_file_attributes", 0)
+                                    & directory_attribute
+                                )
+                                if is_directory:
                                     record_skipped_directory(entry.path)
+                                else:
+                                    record_skipped_file(entry.path)
                                 continue
                             if entry.is_dir(follow_symlinks=False):
                                 entry_stat = (
@@ -293,7 +320,7 @@ def scan_folders(
                                 continue
                             file_stat = (
                                 os.stat(entry.path, follow_symlinks=False)
-                                if stay_on_volume
+                                if stay_on_volume or os.name == "nt"
                                 else entry.stat(follow_symlinks=False)
                             )
                             if stay_on_volume and file_stat.st_dev != root_device:
@@ -303,6 +330,13 @@ def scan_folders(
                             if file_key in seen_files:
                                 continue
                             seen_files.add(file_key)
+                            scanned_size += file_stat.st_size
+                            identity = (file_stat.st_dev, file_stat.st_ino)
+                            if file_stat.st_nlink > 1 and file_stat.st_ino:
+                                if identity in seen_file_identities:
+                                    hard_link_paths += 1
+                                else:
+                                    seen_file_identities.add(identity)
 
                             category = categorize_file(entry.name)
                             scanned_file = ScannedFile(
@@ -348,18 +382,21 @@ def scan_folders(
         for name in sorted(categories_count)
     )
     check_cancelled()
+    def subfolder_summaries() -> Iterable[SubfolderSummary]:
+        for index, (folder_key, size) in enumerate(folders_size.items()):
+            if index % 1024 == 0:
+                check_cancelled()
+            yield SubfolderSummary(
+                name=folders_name[folder_key],
+                path=folder_key,
+                size=size,
+                file_count=folders_count[folder_key],
+            )
+
     subfolders = tuple(
         heapq.nsmallest(
             10,
-            (
-                SubfolderSummary(
-                    name=folders_name[folder_key],
-                    path=folder_key,
-                    size=size,
-                    file_count=folders_count[folder_key],
-                )
-                for folder_key, size in folders_size.items()
-            ),
+            subfolder_summaries(),
             key=lambda folder: (-folder.size, folder.name.casefold(), folder.path.casefold()),
         )
     )
@@ -367,10 +404,12 @@ def scan_folders(
     largest_files = tuple(
         heapq.nsmallest(
             10,
-            files,
+            checked_files(files),
             key=lambda file: (-file.size, file.name.casefold(), file.path.casefold()),
         )
     )
+    check_cancelled()
+    files_result = tuple(files)
     check_cancelled()
 
     if len(valid_roots) == 1 and scan_scope == "Selected folder":
@@ -379,16 +418,19 @@ def scan_folders(
         root_path = scan_scope
     else:
         root_path = scan_scope
-    report_progress(force=True)
+    report_progress(
+        force=True,
+        current_directory=pending[-1] if pending else (valid_roots[-1] if valid_roots else ""),
+    )
 
     return ScanResult(
         root_path=root_path,
-        files=tuple(files),
+        files=files_result,
         categories=categories,
         subfolders=subfolders,
         subfolder_count=len(folders_size),
         largest_files=largest_files,
-        scanned_size=sum(file.size for file in files),
+        scanned_size=scanned_size,
         elapsed_seconds=time.perf_counter() - started,
         inaccessible_items=inaccessible_items,
         inaccessible_directories=inaccessible_directories,
@@ -396,6 +438,8 @@ def scan_folders(
         scan_scope=scan_scope,
         scan_roots=tuple(valid_roots),
         drive_usage=drive_usage,
+        hard_link_paths=hard_link_paths,
+        skipped_files=skipped_files,
     )
 
 

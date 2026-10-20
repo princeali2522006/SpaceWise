@@ -7,6 +7,8 @@ from pathlib import Path
 
 from core.duplicates import DuplicateAnalysis, DuplicateGroup
 from core.recommendations import (
+    CleanupRecommendations,
+    FileReviewOpportunity,
     MIN_LARGE_FILE_THRESHOLD_BYTES,
     RecommendationAnalysisCancelled,
     build_cleanup_recommendations,
@@ -238,6 +240,39 @@ class CleanupRecommendationTests(unittest.TestCase):
                 personal_roots=(),
                 cancel_event=cancel_event,
             )
+
+    def test_large_file_threshold_does_not_change_verified_duplicate_groups(self) -> None:
+        small = ScannedFile("small.bin", "small.bin", 2 * 1024**2, "Other")
+        large = ScannedFile("large.bin", "large.bin", 600 * 1024**2, "Other")
+        duplicate = DuplicateGroup(
+            size=128,
+            digest="a" * 64,
+            paths=("copy-a.bin", "copy-b.bin"),
+            verified_copy_count=2,
+        )
+        candidates = (
+            FileReviewOpportunity(small, 4),
+            FileReviewOpportunity(large, 9),
+        )
+        recommendations = CleanupRecommendations(
+            verified_duplicates=(duplicate,),
+            old_installers=(),
+            large_files=candidates,
+            files_checked=2,
+            inaccessible_paths=(),
+            duplicate_analysis_pending=False,
+            large_file_candidates=candidates,
+        )
+
+        filtered = filter_cleanup_recommendations(
+            recommendations,
+            age_threshold_days=90,
+            large_file_threshold_bytes=500 * 1024**2,
+        )
+
+        self.assertEqual([item.file.name for item in filtered.large_files], ["large.bin"])
+        self.assertEqual(filtered.verified_duplicates, (duplicate,))
+        self.assertEqual(filtered.duplicate_recoverable_bytes, 128)
 
 
 if __name__ == "__main__":

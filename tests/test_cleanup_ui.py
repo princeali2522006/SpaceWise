@@ -87,6 +87,7 @@ class CleanupPageTests(unittest.TestCase):
             {item.file.path for item in recommendations.large_files},
             {str(large_file)},
         )
+        self.assertTrue(recommendations.duplicate_analysis_pending)
         installer_row = next(
             row
             for row in range(window.cleanup.recommendation_proxy.rowCount())
@@ -100,6 +101,56 @@ class CleanupPageTests(unittest.TestCase):
         self.assertIn("90 days", window.cleanup.detail_condition_label.text())
         self.assertIsNone(window.cleanup_worker)
         window.close()
+
+    def test_cleanup_runs_while_duplicate_verification_is_active(self) -> None:
+        large_file = self.root / "large.bin"
+        large_file.write_bytes(b"x" * (2 * 1024**2))
+        window = MainWindow()
+        self.windows.append(window)
+        window._scan_completed(scan_folder(self.root))
+        window.cleanup._set_large_threshold(1024**2)
+
+        class ActiveDuplicateWorker:
+            @staticmethod
+            def isRunning() -> bool:
+                return True
+
+            @staticmethod
+            def cancel() -> None:
+                return None
+
+        window.duplicate_worker = ActiveDuplicateWorker()
+        with (
+            patch("ui.main_window.discover_user_folders", return_value=()),
+            patch("core.recommendations._default_protected_roots", return_value=()),
+        ):
+            window.analyze_cleanup(90, 1024**2)
+            worker = window.cleanup_worker
+            self.assertIsNotNone(worker)
+            worker.wait()
+            for _ in range(10):
+                self.app.processEvents()
+
+        recommendations = window.cleanup.recommendations
+        self.assertIsNotNone(recommendations)
+        self.assertTrue(recommendations.duplicate_analysis_pending)
+        self.assertEqual(
+            [item.file.path for item in recommendations.large_files],
+            [str(large_file)],
+        )
+        group = DuplicateGroup(1, "a" * 64, ("one", "two"), 2)
+        window.cleanup.set_duplicate_analysis(
+            DuplicateAnalysis(
+                groups=(group,),
+                unverified_files=(),
+                candidate_files=2,
+                hashed_files=2,
+                elapsed_seconds=0.1,
+            )
+        )
+        self.assertFalse(window.cleanup.recommendations.duplicate_analysis_pending)
+        self.assertEqual(window.cleanup.recommendations.verified_duplicates, (group,))
+        window.duplicate_worker = None
 
     def test_large_threshold_minimum_steps_units_and_direct_validation(self) -> None:
         page = self._new_page()
@@ -282,6 +333,11 @@ class CleanupPageTests(unittest.TestCase):
         page = self._new_page()
         page._set_large_threshold(1024**2)
         page.set_result(recommendations)
+        self.assertEqual(
+            page.recommendation_table.horizontalHeader().sectionResizeMode(0),
+            page.recommendation_table.horizontalHeader().ResizeMode.Interactive,
+        )
+        self.assertTrue(page.recommendation_table.isSortingEnabled())
 
         page.category_filter.setCurrentText("Large file")
         page.recommendation_table.sortByColumn(2, Qt.SortOrder.DescendingOrder)

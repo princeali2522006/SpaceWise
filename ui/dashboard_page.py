@@ -1,6 +1,7 @@
 """Dashboard screen and scan result visualizations."""
 
 from functools import partial
+import os
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPaintEvent, QPainter, QPen, QWheelEvent
@@ -287,6 +288,12 @@ class DashboardPage(QWidget):
             QHeaderView.ResizeMode.Interactive
         )
         self.category_largest.horizontalHeader().setStretchLastSection(True)
+        self.category_largest.horizontalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
+        self.category_largest.horizontalHeaderItem(0).setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         self.category_largest.setColumnWidth(0, 195)
         self._fit_table_height(self.category_largest)
         detail_layout.addWidget(self.category_largest)
@@ -316,6 +323,13 @@ class DashboardPage(QWidget):
             QHeaderView.ResizeMode.Interactive
         )
         self.largest_table.horizontalHeader().setStretchLastSection(True)
+        self.largest_table.horizontalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
+        for column in (0, 2):
+            self.largest_table.horizontalHeaderItem(column).setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
         self.largest_table.setColumnWidth(0, 220)
         self.largest_table.setColumnWidth(1, 90)
         self._fit_table_height(self.largest_table)
@@ -342,6 +356,12 @@ class DashboardPage(QWidget):
             QHeaderView.ResizeMode.Interactive
         )
         self.subfolder_table.horizontalHeader().setStretchLastSection(True)
+        self.subfolder_table.horizontalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
+        self.subfolder_table.horizontalHeaderItem(0).setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         self.subfolder_table.setColumnWidth(0, 320)
         self.subfolder_table.setColumnWidth(1, 90)
         self.subfolder_table.setColumnWidth(2, 90)
@@ -371,8 +391,8 @@ class DashboardPage(QWidget):
         panel = QFrame()
         panel.setObjectName("panel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(16, 14, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(6)
         label = QLabel(title)
         label.setObjectName("sectionTitle")
         layout.addWidget(label)
@@ -383,13 +403,22 @@ class DashboardPage(QWidget):
         table.resizeRowsToContents()
         header_height = table.horizontalHeader().sizeHint().height()
         rows_height = sum(table.rowHeight(row) for row in range(table.rowCount()))
-        table.setFixedHeight(header_height + rows_height + table.frameWidth() * 2 + 2)
+        table.setFixedHeight(max(90, header_height + rows_height + table.frameWidth() * 2 + 2))
+        table.verticalHeader().setDefaultSectionSize(24)
 
     @staticmethod
-    def _table_item(text: str, sort_value: str | int | float, tooltip: str) -> QTableWidgetItem:
+    def _table_item(
+        text: str,
+        sort_value: str | int | float,
+        tooltip: str,
+        *,
+        alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft
+        | Qt.AlignmentFlag.AlignVCenter,
+    ) -> QTableWidgetItem:
         item = SortableTableWidgetItem(text)
         item.setData(Qt.ItemDataRole.UserRole, sort_value)
         item.setToolTip(tooltip)
+        item.setTextAlignment(alignment)
         return item
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -457,15 +486,15 @@ class DashboardPage(QWidget):
             else:
                 scope_label = "storage"
             if self.result is None:
-                status = f"Analyzing your storage · {scope_label} — no completed scan yet."
+                status = f"Scanning {scope_label}… no completed scan yet."
             else:
                 status = (
-                    f"Analyzing your storage · {scope_label} — the last completed results remain available "
+                    f"Scanning {scope_label}… the last completed results remain available "
                     "until this scan finishes."
                 )
             self.scan_status_label.setText(status)
             self.scan_status_label.show()
-            self.activity_panel.start("Analyzing your storage", "Files scanned so far: 0")
+            self.activity_panel.start("Scanning…", "Files discovered so far: 0")
         else:
             self.activity_panel.stop()
 
@@ -486,13 +515,17 @@ class DashboardPage(QWidget):
             self.drive_usage_label.setText(
                 f"Drive capacity (Windows): {format_size(usage.total)} total · "
                 f"{format_size(usage.used)} used · {format_size(usage.free)} free. "
-                "Scanned-file size below counts accessible files only."
+                "Scanned-file size below is the logical size of accessible file paths; "
+                "it need not match Windows used space."
+                + (
+                    f" {result.hard_link_paths:,} additional hard-link path(s) share file contents."
+                    if result.hard_link_paths
+                    else ""
+                )
             )
             self.drive_usage_label.show()
         self.stats[0].set_value(f"{len(result.files):,}")
-        self.stats[1].caption_label.setText(
-            "Scanned-file size" if result.drive_usage is not None else "Total size"
-        )
+        self.stats[1].caption_label.setText("Logical size of scanned paths")
         self.stats[1].set_value(format_size(result.total_size))
         self.stats[2].set_value(str(len(result.category_sizes)))
         self.stats[3].set_value(f"{result.elapsed_seconds:.2f} s")
@@ -549,7 +582,12 @@ class DashboardPage(QWidget):
             self.largest_table.setItem(
                 row,
                 1,
-                self._table_item(format_size(file.size), file.size, f"{file.size:,} bytes"),
+                self._table_item(
+                    format_size(file.size),
+                    file.size,
+                    f"{file.size:,} bytes",
+                    alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                ),
             )
             self.largest_table.setItem(
                 row,
@@ -562,13 +600,27 @@ class DashboardPage(QWidget):
         self._fit_table_height(self.largest_table)
 
         self.largest_hint.setText("The 10 largest files in this scan.")
-        if result.inaccessible_items or result.skipped_directories:
-            self.scan_status_label.setText(
-                f"Partial scan: {result.inaccessible_directories:,} inaccessible folder(s), "
-                f"{result.inaccessible_items:,} inaccessible item(s), and "
-                f"{result.skipped_directories:,} linked, reparse-point, or other-volume folder(s) skipped; "
-                "statistics include accessible files only."
-            )
+        if (
+            result.inaccessible_items
+            or result.skipped_directories
+            or result.skipped_files
+            or result.hard_link_paths
+        ):
+            notes: list[str] = []
+            if result.inaccessible_items or result.skipped_directories or result.skipped_files:
+                notes.append(
+                    f"Partial scan: {result.inaccessible_directories:,} inaccessible folder(s), "
+                    f"{result.inaccessible_items:,} inaccessible item(s), "
+                    f"{result.skipped_directories:,} linked/reparse/other-volume folder(s), and "
+                    f"{result.skipped_files:,} linked/reparse file(s) skipped. "
+                    "Statistics include accessible files only."
+                )
+            if result.hard_link_paths:
+                notes.append(
+                    f"The logical path total includes {result.hard_link_paths:,} additional hard-link "
+                    "path(s) sharing file contents; physical space is not estimated."
+                )
+            self.scan_status_label.setText(" ".join(notes))
             self.scan_status_label.show()
         else:
             self.scan_status_label.clear()
@@ -603,6 +655,7 @@ class DashboardPage(QWidget):
                 format_size(file.size),
                 file.size,
                 f"{file.size:,} bytes\n{file.path}",
+                alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
             )
             self.category_largest.setItem(row, 0, name_item)
             self.category_largest.setItem(row, 1, size_item)
@@ -633,7 +686,16 @@ class DashboardPage(QWidget):
                 self.subfolder_table.setItem(
                     row,
                     column,
-                    self._table_item(text, sort_value, folder.path),
+                    self._table_item(
+                        text,
+                        sort_value,
+                        folder.path,
+                        alignment=(
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                            if column == 0
+                            else Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+                        ),
+                    ),
                 )
         self.subfolder_table.setSortingEnabled(True)
         if visible_folders:
@@ -655,9 +717,12 @@ class DashboardPage(QWidget):
         self.scan_status_label.show()
 
     def set_scan_progress(self, progress: ScanProgress) -> None:
+        folder = os.path.basename(progress.current_directory.rstrip("\\/")) or progress.current_directory
         self.activity_panel.set_details(
-            f"Files scanned so far: {progress.files_scanned:,}"
+            f"Files discovered: {progress.files_scanned:,}"
+            + (f" · Current folder: {folder}" if folder else "")
         )
+        self.activity_panel.details_label.setToolTip(progress.current_directory)
 
     def set_scan_cancelled(self, folder: str, message: str) -> None:
         self.scan_status_label.setText(
