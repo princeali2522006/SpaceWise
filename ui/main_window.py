@@ -1,11 +1,12 @@
 """Main application window and sidebar navigation."""
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QColor, QCloseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
     QButtonGroup,
+    QApplication,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProxyStyle,
+    QStyle,
     QPushButton,
     QStackedWidget,
     QTableView,
@@ -44,7 +47,41 @@ SECTIONS = (
 )
 
 
+class _ChevronProxyStyle(QProxyStyle):
+    def drawPrimitive(
+        self,
+        element: QStyle.PrimitiveElement,
+        option,
+        painter: QPainter,
+        widget=None,
+    ) -> None:
+        if (
+            element == QStyle.PrimitiveElement.PE_IndicatorArrowDown
+            and isinstance(widget, QComboBox)
+        ):
+            rect = option.rect
+            center_x = rect.center().x()
+            center_y = rect.center().y()
+            painter.save()
+            painter.setPen(
+                QPen(
+                    QColor("#656c76"),
+                    1.5,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                )
+            )
+            painter.drawLine(center_x - 3, center_y - 1, center_x, center_y + 2)
+            painter.drawLine(center_x, center_y + 2, center_x + 3, center_y - 1)
+            painter.restore()
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+
 class MainWindow(QMainWindow):
+    _chevron_style: _ChevronProxyStyle | None = None
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("SpaceWise")
@@ -128,6 +165,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
     def _apply_styles(self) -> None:
+        if not isinstance(QApplication.style(), _ChevronProxyStyle):
+            self.__class__._chevron_style = _ChevronProxyStyle(QApplication.style())
+            QApplication.setStyle(self.__class__._chevron_style)
         self.setStyleSheet(
             """
             QWidget {
@@ -154,6 +194,7 @@ class MainWindow(QMainWindow):
                 background: #ffffff; border: 1px solid #e7e9ed; border-radius: 10px;
             }
             #statValue { font-size: 18pt; font-weight: 650; }
+            #compactMetric { font-size: 16pt; font-weight: 650; }
             #sectionTitle { font-size: 10.5pt; font-weight: 650; }
             #legendName { font-size: 9pt; }
             #emptyCard { background: #fbfbfc; }
@@ -174,9 +215,7 @@ class MainWindow(QMainWindow):
                 padding: 8px 10px; border: 1px solid #dfe2e7; border-radius: 7px;
                 background: white; selection-background-color: #e9edf7;
             }
-            QLineEdit#searchInput:focus {
-                border: 1px solid #8ca4d7; box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16);
-            }
+            QLineEdit#searchInput:focus { border: 1px solid #8ca4d7; }
             QPushButton {
                 border-radius: 7px; padding: 9px 15px; font-weight: 600;
                 background: #ffffff; border: 1px solid #dfe2e7; color: #17191d;
@@ -184,19 +223,19 @@ class MainWindow(QMainWindow):
             QPushButton#primaryButton { background: #17191d; color: white; border: 1px solid #17191d; }
             QPushButton:enabled:hover { background: #f1f2f5; border-color: #c8ccd3; }
             QPushButton:enabled:pressed { background: #e5e7eb; border-color: #b9bec7; }
-            QPushButton:focus { border: 1px solid #8ca4d7; box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16); }
+            QPushButton:focus { border: 1px solid #8ca4d7; }
             QPushButton:disabled {
                 color: #9ba1aa; background: #f1f2f4; border-color: #e1e3e7;
             }
             QPushButton#primaryButton:enabled:hover { background: #35383f; border-color: #35383f; }
             QPushButton#primaryButton:enabled:pressed { background: #4a4d54; border-color: #4a4d54; }
-            QPushButton#primaryButton:focus { border: 1px solid #8ca4d7; box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16); }
+            QPushButton#primaryButton:focus { border: 1px solid #8ca4d7; }
             QPushButton#primaryButton:disabled {
                 color: #e4e5e7; background: #8e9299; border-color: #8e9299;
             }
             QPushButton#secondaryButton:enabled:hover { background: #f6f7f9; }
             QPushButton#secondaryButton:enabled:pressed { background: #e9ebef; }
-            QPushButton#secondaryButton:focus { border: 1px solid #8ca4d7; box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16); }
+            QPushButton#secondaryButton:focus { border: 1px solid #8ca4d7; }
             QPushButton#thresholdButton {
                 font-size: 15pt; padding: 2px; border-radius: 7px;
             }
@@ -208,10 +247,6 @@ class MainWindow(QMainWindow):
                 subcontrol-origin: padding; subcontrol-position: top right;
                 width: 26px; border: none; border-left: 1px solid #eceef1;
                 border-top-right-radius: 6px; border-bottom-right-radius: 6px;
-            }
-            QComboBox::down-arrow {
-                width: 10px; height: 10px; margin-right: 8px;
-                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%23656c76' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
             }
             QComboBox QAbstractItemView {
                 background: #ffffff; color: #17191d;
@@ -247,7 +282,6 @@ class MainWindow(QMainWindow):
             }
             QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {
                 border: 1px solid #8ca4d7;
-                box-shadow: 0 0 0 2px rgba(140, 164, 215, 0.16);
             }
             QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QPlainTextEdit:disabled {
                 color: #9ba1aa; background: #f1f2f4; border-color: #e1e3e7;
@@ -262,6 +296,9 @@ class MainWindow(QMainWindow):
                 padding: 4px 6px;
             }
             QComboBox:enabled:hover { border-color: #c8ccd3; background: #fafbfc; }
+            QLineEdit:enabled:hover, QSpinBox:enabled:hover, QPlainTextEdit:enabled:hover {
+                border-color: #c8ccd3;
+            }
             QScrollBar:vertical, QScrollBar:horizontal {
                 background: #f7f8fa; border: 1px solid #e7e9ed; border-radius: 5px;
             }
@@ -293,7 +330,7 @@ class MainWindow(QMainWindow):
             QTableView, QTableWidget {
                 border: 1px solid #e7e9ed; border-radius: 8px; alternate-background-color: #fafbfc;
             }
-            QTableView:focus, QTableWidget:focus { border: 2px solid #858b95; }
+            QTableView:focus, QTableWidget:focus { border: 1px solid #8ca4d7; }
             QHeaderView::section {
                 background: #f7f8fa; color: #616975; border: none;
                 border-bottom: 1px solid #e7e9ed; padding: 9px; font-weight: 600;
@@ -308,7 +345,10 @@ class MainWindow(QMainWindow):
             }
             QTableWidget::item:hover { background: #f3f4f6; color: #17191d; }
             QTableView::item:selected, QTableWidget::item:selected {
-                background: #e9edf7; color: #17191d;
+                background: #dbe5fa; color: #17191d;
+            }
+            QTableView#duplicateGroupsTable::item:selected {
+                border-left: 3px solid #5579bd;
             }
             #comingSoon { font-size: 19pt; font-weight: 650; }
             QScrollArea { border: none; }

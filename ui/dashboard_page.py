@@ -318,6 +318,9 @@ class DashboardPage(QWidget):
         self.largest_table.verticalHeader().hide()
         self.largest_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.largest_table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.largest_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self.largest_table.setSortingEnabled(True)
         self.largest_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Interactive
@@ -403,8 +406,10 @@ class DashboardPage(QWidget):
         table.resizeRowsToContents()
         header_height = table.horizontalHeader().sizeHint().height()
         rows_height = sum(table.rowHeight(row) for row in range(table.rowCount()))
-        table.setFixedHeight(max(90, header_height + rows_height + table.frameWidth() * 2 + 2))
         table.verticalHeader().setDefaultSectionSize(24)
+        table.setFixedHeight(
+            max(1, header_height + rows_height + table.frameWidth() * 2 + 2)
+        )
 
     @staticmethod
     def _table_item(

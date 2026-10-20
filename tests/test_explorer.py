@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication, QMenu, QScrollArea
+from PySide6.QtWidgets import QApplication, QMenu, QScrollArea, QSizePolicy
 
 from core.scanner import ScanProgress, ScannedFile, scan_folder
 from ui.dashboard_page import DashboardPage
@@ -80,6 +80,20 @@ class ExplorerAndDashboardTests(unittest.TestCase):
         explorer.search_input.clear()
         self._wait_for_filter(explorer)
         self.assertEqual(explorer.table.model().rowCount(), 2)
+
+    def test_enter_shows_matching_count_without_restarting_live_filter(self) -> None:
+        explorer = ExplorerPage()
+        explorer.set_result(self.result)
+        explorer.search_input.setText("report")
+        self._wait_for_filter(explorer)
+        generation = explorer._filter_generation
+
+        explorer._handle_search_return()
+
+        self.assertEqual(explorer._filter_generation, generation)
+        self.assertIn("2 matching files", explorer.search_feedback_label.text())
+        self.assertIn("report", explorer.search_feedback_label.text())
+        self.assertFalse(explorer.search_feedback_label.isHidden())
 
     def test_personal_filter_uses_user_folder_paths_and_combines_with_other_filters(self) -> None:
         personal_root = self.root / "Documents"
@@ -285,6 +299,11 @@ class ExplorerAndDashboardTests(unittest.TestCase):
 
     def test_dashboard_tables_expand_instead_of_scrolling_internally(self) -> None:
         dashboard = DashboardPage()
+        self.assertEqual(
+            dashboard.largest_table.sizePolicy().verticalPolicy(),
+            QSizePolicy.Policy.Fixed,
+        )
+        self.assertLess(dashboard.largest_table.height(), 90)
         dashboard.set_result(self.result)
 
         self.assertIsNotNone(dashboard.findChild(QScrollArea))

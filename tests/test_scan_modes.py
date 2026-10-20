@@ -69,6 +69,17 @@ class ScanModeTests(unittest.TestCase):
         self.assertEqual(window.explorer.last_scan_root, window.scan_result.root_path)
         window.close()
 
+    def test_all_five_navigation_pages_remain_available(self) -> None:
+        window = MainWindow()
+        self.assertEqual(len(window.pages), 5)
+        self.assertEqual(len(window.nav_buttons), 5)
+
+        for index in range(5):
+            window.nav_buttons[index].click()
+            self.assertEqual(window.stack.currentIndex(), index)
+            self.assertIs(window.stack.currentWidget(), window.pages[index])
+        window.close()
+
     def test_my_files_scan_deduplicates_overlapping_known_folder_roots(self) -> None:
         window = MainWindow()
         with patch(
@@ -225,7 +236,7 @@ class ScanModeTests(unittest.TestCase):
         self.assertEqual(page.groups_table.model().rowCount(), 1)
         self.assertEqual(page.groups_table.model().index(0, 0).data(), "Unverified")
         self.assertEqual(page.paths_model.rowCount(), 1)
-        self.assertEqual(page.paths_model.index(0, 0).data(), missing_path)
+        self.assertEqual(page.paths_model.index(0, 2).data(), missing_path)
         self.assertIn("File changed during hashing", page.detail_summary.text())
         self.assertIn("Incomplete analysis", page.result_state_label.text())
         self.assertIn("not included in savings", page.results_model.data(
@@ -287,14 +298,15 @@ class ScanModeTests(unittest.TestCase):
         self.assertEqual(page.groups_table.model().rowCount(), 1)
         self.assertEqual(page.paths_model.rowCount(), 2)
         self.assertEqual(
-            {page.paths_model.index(row, 0).data() for row in range(2)},
+            {page.paths_model.index(row, 2).data() for row in range(2)},
             set(paths),
         )
         with patch("ui.duplicates_page.QApplication.clipboard") as clipboard:
             page._copy_selected_path()
         clipboard.return_value.setText.assert_called_once_with(paths[0])
-        self.assertIn("SHA-256 content", page.status_label.text())
-        self.assertIn("estimated potential recoverable space", page.summary_label.text())
+        self.assertIn("SHA-256 hashed", page.status_label.text())
+        self.assertIn("potential savings", page.summary_label.text())
+        self.assertEqual(page.analysis_duration_label.text(), "Analysis time: 0 sec")
 
     def test_duplicate_group_table_sorts_size_savings_and_copy_count(self) -> None:
         page = DuplicatesPage()
@@ -321,6 +333,52 @@ class ScanModeTests(unittest.TestCase):
         self.assertEqual(table_model.index(0, 1).data(), "gamma.bin")
         page.groups_table.sortByColumn(2, Qt.SortOrder.DescendingOrder)
         self.assertEqual(table_model.index(0, 1).data(), "gamma.bin")
+
+    def test_duplicate_selection_identity_survives_sort_and_duration_is_formatted(self) -> None:
+        page = DuplicatesPage()
+        self.addCleanup(self.dispose_widget, page)
+        groups = (
+            DuplicateGroup(4, "a" * 64, ("alpha.bin", "alpha-copy.bin"), 2),
+            DuplicateGroup(10, "b" * 64, ("oral_normal.dds", "oral-copy.dds"), 2),
+            DuplicateGroup(6, "c" * 64, ("gamma.bin", "gamma-copy.bin"), 2),
+        )
+        page.set_result(
+            DuplicateAnalysis(
+                groups=groups,
+                unverified_files=(),
+                candidate_files=6,
+                hashed_files=6,
+                elapsed_seconds=14 * 60 + 32,
+            )
+        )
+        page.groups_table.selectRow(1)
+        self.assertIn("oral_normal.dds", page.detail_title.text())
+        self.assertIn("Group 2 of 3", page.detail_title.text())
+        page.groups_table.sortByColumn(3, Qt.SortOrder.DescendingOrder)
+        for _ in range(5):
+            self.app.processEvents()
+        current = page.groups_table.currentIndex()
+        self.assertTrue(current.isValid())
+        selected = page.results_proxy.mapToSource(current)
+        self.assertEqual(page.results_model.result_at(selected.row()).digest, "b" * 64)
+        self.assertEqual(
+            page.analysis_duration_label.text(),
+            "Analysis time: 14 min 32 sec",
+        )
+
+    def test_old_duplicate_result_without_timing_does_not_invent_duration(self) -> None:
+        page = DuplicatesPage()
+        self.addCleanup(self.dispose_widget, page)
+        page.set_result(
+            DuplicateAnalysis(
+                groups=(),
+                unverified_files=(),
+                candidate_files=0,
+                hashed_files=0,
+            )
+        )
+
+        self.assertEqual(page.analysis_duration_label.text(), "")
 
     def test_duplicate_results_handle_thousands_of_groups_with_table_models(self) -> None:
         page = DuplicatesPage()

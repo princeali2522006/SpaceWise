@@ -173,6 +173,7 @@ class ExplorerPage(QWidget):
         self._filter_cancel_event: Event | None = None
         self._filter_future: Future[tuple[int, ...] | None] | None = None
         self._filter_future_generation = 0
+        self._search_confirmation_pending = False
         self._sort_column = 0
         self._sort_order = Qt.SortOrder.AscendingOrder
         layout = QVBoxLayout(self)
@@ -209,6 +210,11 @@ class ExplorerPage(QWidget):
         self.path_label.setObjectName("pathBanner")
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.path_label)
+        self.search_feedback_label = QLabel()
+        self.search_feedback_label.setObjectName("mutedText")
+        self.search_feedback_label.setAccessibleName("Search result count")
+        self.search_feedback_label.hide()
+        layout.addWidget(self.search_feedback_label)
         self.scan_status_label = QLabel()
         self.scan_status_label.setObjectName("scanStatus")
         self.scan_status_label.hide()
@@ -271,6 +277,9 @@ class ExplorerPage(QWidget):
             self.filter_combo.blockSignals(False)
             self.file_scope_combo.setCurrentIndex(0)
             self.search_input.clear()
+            self.search_feedback_label.clear()
+            self.search_feedback_label.hide()
+            self._search_confirmation_pending = False
             self.scan_status_label.clear()
             self.scan_status_label.hide()
             self.activity_panel.stop()
@@ -282,6 +291,9 @@ class ExplorerPage(QWidget):
         self.last_scan_root = result.root_path
         self.path_label.setText(f"Latest completed scan: {result.display_scope}")
         self.path_label.setToolTip("\n".join(result.scan_roots))
+        self.search_feedback_label.clear()
+        self.search_feedback_label.hide()
+        self._search_confirmation_pending = False
         self.filter_combo.blockSignals(True)
         self.filter_combo.clear()
         self.filter_combo.addItem("All categories")
@@ -365,15 +377,28 @@ class ExplorerPage(QWidget):
 
     def _handle_search_return(self) -> None:
         query = self.search_input.text().strip()
+        if self._applied_filter_generation == self._filter_generation:
+            self._show_search_count(query, self.file_model.rowCount())
+            return
+        self._search_confirmation_pending = True
+        self.search_feedback_label.setText("Updating search results…")
+        self.search_feedback_label.show()
+
+    def _show_search_count(self, query: str, count: int) -> None:
         if query:
-            self.scan_status_label.setText(f"Search applied: showing matching file results for '{query}'.")
-            self.scan_status_label.show()
+            noun = "file" if count == 1 else "files"
+            self.search_feedback_label.setText(
+                f"{count:,} matching {noun} for “{query}”."
+            )
+            self.search_feedback_label.show()
         else:
-            self.scan_status_label.clear()
-            self.scan_status_label.hide()
-        self._populate_table()
+            self.search_feedback_label.clear()
+            self.search_feedback_label.hide()
 
     def _populate_table(self, *_: str) -> None:
+        self._search_confirmation_pending = False
+        self.search_feedback_label.clear()
+        self.search_feedback_label.hide()
         self._filter_generation += 1
         generation = self._filter_generation
         if self._filter_cancel_event is not None:
@@ -388,6 +413,12 @@ class ExplorerPage(QWidget):
         if not self.files:
             self.file_model.set_visible_rows(range(len(self.files)))
             self._applied_filter_generation = generation
+            if self._search_confirmation_pending:
+                self._show_search_count(
+                    self.search_input.text().strip(),
+                    self.file_model.rowCount(),
+                )
+                self._search_confirmation_pending = False
             self._filter_cancel_event = None
             self._filter_future = None
             self._filter_timer.stop()

@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent, QRect, Qt
+from PySide6.QtGui import QImage, QPainter
+from PySide6.QtWidgets import QApplication, QStyle, QStyleOption
 
 from core.duplicates import DuplicateAnalysis, DuplicateGroup
 from core.recommendations import build_cleanup_recommendations
@@ -20,7 +21,7 @@ from ui.cleanup_page import (
     format_large_threshold,
     parse_large_threshold,
 )
-from ui.main_window import MainWindow
+from ui.main_window import MainWindow, _ChevronProxyStyle
 
 
 class CleanupPageTests(unittest.TestCase):
@@ -97,7 +98,7 @@ class CleanupPageTests(unittest.TestCase):
         window.cleanup.recommendation_table.setCurrentIndex(
             window.cleanup.recommendation_proxy.index(installer_row, 0)
         )
-        self.assertIn("does not show", window.cleanup.detail_warning_label.text())
+        self.assertIn("does not mean unused", window.cleanup.detail_warning_label.text())
         self.assertIn("90 days", window.cleanup.detail_condition_label.text())
         self.assertIsNone(window.cleanup_worker)
         window.close()
@@ -230,7 +231,8 @@ class CleanupPageTests(unittest.TestCase):
             page.recommendation_proxy.index(0, 0)
         )
         self.assertEqual(page.detail_paths.toPlainText(), str(file_path))
-        self.assertIn("not necessarily unwanted", page.detail_warning_label.text())
+        self.assertIn("does not mean unwanted", page.detail_warning_label.text())
+        self.assertTrue(page.path_selector.isHidden())
         self.assertIn("MB", page.recommendation_proxy.index(0, 2).data() or "")
         self.assertIn("days", page.recommendation_proxy.index(0, 3).data() or "")
         page.copy_selected_path()
@@ -359,6 +361,64 @@ class CleanupPageTests(unittest.TestCase):
             page.recommendation_proxy.index(0, 4).data(),
             "600 B",
         )
+        self.assertEqual(page.duplicate_metric_value.text(), "2")
+        self.assertEqual(page.duplicate_metric_detail.text(), "Potential savings: 700 B")
+
+    def test_cleanup_duplicate_detail_lists_filename_and_containing_folder(self) -> None:
+        group = DuplicateGroup(
+            10,
+            "c" * 64,
+            (str(self.root / "one" / "same.bin"), str(self.root / "two" / "same.bin")),
+            2,
+        )
+        recommendations = build_cleanup_recommendations(
+            (),
+            personal_roots=(),
+            duplicate_analysis=DuplicateAnalysis(
+                groups=(group,),
+                unverified_files=(),
+                candidate_files=2,
+                hashed_files=2,
+                elapsed_seconds=1.0,
+            ),
+            protected_roots=(),
+        )
+        page = self._new_page()
+        page.set_result(recommendations)
+        page.recommendation_table.setCurrentIndex(page.recommendation_proxy.index(0, 0))
+
+        self.assertIn("same.bin", page.detail_title.text())
+        self.assertIn("distinct copies", page.detail_reason_label.text())
+        self.assertIn("same.bin  in", page.detail_paths.toPlainText())
+        self.assertIn(str(self.root / "one"), page.detail_paths.toPlainText())
+        self.assertIn(str(self.root / "two"), page.detail_paths.toPlainText())
+        self.assertFalse(page.path_selector.isHidden())
+        self.assertEqual(page._selected_path(), group.paths[0])
+
+    def test_cleanup_table_fills_width_and_keeps_filename_column_widest(self) -> None:
+        page = self._new_page()
+        page.recommendation_table.resize(1100, 300)
+        page.recommendation_table.show()
+        page.show()
+        self.app.processEvents()
+
+        widths = [
+            page.recommendation_table.columnWidth(column)
+            for column in range(page.recommendation_model.columnCount())
+        ]
+        self.assertAlmostEqual(
+            sum(widths),
+            page.recommendation_table.viewport().width(),
+            delta=2,
+        )
+        self.assertGreater(
+            widths[1],
+            max(width for index, width in enumerate(widths) if index != 1),
+        )
+        self.assertEqual(
+            page.recommendation_table.horizontalHeader().sectionResizeMode(1),
+            page.recommendation_table.horizontalHeader().ResizeMode.Interactive,
+        )
 
     def test_global_interaction_feedback_styles_and_cursors(self) -> None:
         window = MainWindow()
@@ -371,6 +431,28 @@ class CleanupPageTests(unittest.TestCase):
         self.assertIn(
             "QTableView#cleanupRecommendationsTable::item:hover",
             styles,
+        )
+        self.assertNotIn("QComboBox::down-arrow", styles)
+        self.assertIsInstance(MainWindow._chevron_style, _ChevronProxyStyle)
+        image = QImage(12, 12, QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.white)
+        painter = QPainter(image)
+        option = QStyleOption()
+        option.rect = QRect(0, 0, 12, 12)
+        MainWindow._chevron_style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_IndicatorArrowDown,
+            option,
+            painter,
+            window.cleanup.category_filter,
+        )
+        painter.end()
+        self.assertGreater(
+            sum(
+                image.pixelColor(x, y) != Qt.GlobalColor.white
+                for x in range(12)
+                for y in range(12)
+            ),
+            2,
         )
         self.assertEqual(
             window.dashboard.scan_button.cursor().shape(),

@@ -62,7 +62,7 @@ class DuplicateAnalysis:
     unverified_files: tuple[UnverifiedFile, ...]
     candidate_files: int
     hashed_files: int
-    elapsed_seconds: float
+    elapsed_seconds: float | None = None
     bytes_processed: int = 0
     skipped_files: int = 0
     cached_files_reused: int = 0

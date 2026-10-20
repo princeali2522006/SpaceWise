@@ -8,6 +8,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QProcess,
     Qt,
+    QTimer,
     QSortFilterProxyModel,
     Signal,
     QUrl,
@@ -46,6 +47,17 @@ RESULT_HEADERS = (
     "File size",
     "Estimated savings",
 )
+
+
+def format_duration(seconds: float) -> str:
+    total_seconds = max(0, round(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours} hr {minutes} min {remaining_seconds} sec"
+    if minutes:
+        return f"{minutes} min {remaining_seconds} sec"
+    return f"{remaining_seconds} sec"
 
 
 class DuplicateResultsModel(QAbstractTableModel):
@@ -137,13 +149,13 @@ class DuplicateResultsModel(QAbstractTableModel):
 class DuplicatePathsModel(QAbstractTableModel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.rows: tuple[tuple[str, str], ...] = ()
+        self.rows: tuple[tuple[str, str, str, str], ...] = ()
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self.rows)
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return 0 if parent.isValid() else 2
+        return 0 if parent.isValid() else 4
 
     def headerData(
         self,
@@ -152,7 +164,7 @@ class DuplicatePathsModel(QAbstractTableModel):
         role: int = Qt.ItemDataRole.DisplayRole,
     ) -> str | None:
         if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
-            return ("File path", "Verification")[section]
+            return ("File name", "Containing folder", "Full path", "Verification")[section]
         return None
 
     def data(
@@ -162,21 +174,36 @@ class DuplicatePathsModel(QAbstractTableModel):
     ) -> str | None:
         if not index.isValid() or not 0 <= index.row() < len(self.rows):
             return None
-        value = self.rows[index.row()][index.column()]
+        row = self.rows[index.row()]
         if role == Qt.ItemDataRole.DisplayRole:
-            return value
+            return row[index.column()]
         if role == Qt.ItemDataRole.ToolTipRole:
-            return value
+            return row[2] if index.column() < 3 else row[3]
         return None
 
     def path_at(self, row: int) -> str:
-        return self.rows[row][0]
+        return self.rows[row][2]
 
     def set_group(self, result: DuplicateGroup | UnverifiedFile | None) -> None:
         if isinstance(result, DuplicateGroup):
-            rows = tuple((path, "Verified identical content") for path in result.paths)
+            rows = tuple(
+                (
+                    os.path.basename(path),
+                    os.path.dirname(path),
+                    path,
+                    "Verified identical content",
+                )
+                for path in result.paths
+            )
         elif isinstance(result, UnverifiedFile):
-            rows = ((result.path, f"Not verified: {result.reason}"),)
+            rows = (
+                (
+                    os.path.basename(result.path),
+                    os.path.dirname(result.path),
+                    result.path,
+                    f"Not verified: {result.reason}",
+                ),
+            )
         else:
             rows = ()
         self.beginResetModel()
@@ -195,13 +222,13 @@ class DuplicatesPage(QWidget):
         layout.setSpacing(14)
         title = QLabel("Duplicates")
         title.setObjectName("pageTitle")
-        description = QLabel(
-            "Screen equal-size files, then verify likely matches with full SHA-256. "
-            "Cached hashes are reused only when file identity, size, timestamps, and a content sample match; "
-            "edits that preserve all of these can evade invalidation. Analysis is read-only."
-        )
+        description = QLabel("Review verified duplicate files using full SHA-256 comparison.")
         description.setObjectName("mutedText")
-        description.setWordWrap(True)
+        description.setToolTip(
+            "Completed hashes may be reused when file identity, size, timestamps, and a content "
+            "sample match. Edits that preserve those values can evade cache invalidation. "
+            "SpaceWise reads files only and never changes them."
+        )
         layout.addWidget(title)
         layout.addWidget(description)
 
@@ -232,8 +259,13 @@ class DuplicatesPage(QWidget):
 
         self.summary_label = QLabel()
         self.summary_label.setObjectName("sectionTitle")
-        self.summary_label.setWordWrap(True)
-        layout.addWidget(self.summary_label)
+        self.analysis_duration_label = QLabel()
+        self.analysis_duration_label.setObjectName("mutedText")
+        self.analysis_duration_label.setAccessibleName("Duplicate analysis duration")
+        summary_layout = QHBoxLayout()
+        summary_layout.addWidget(self.summary_label, 1)
+        summary_layout.addWidget(self.analysis_duration_label)
+        layout.addLayout(summary_layout)
         self.status_label = QLabel()
         self.status_label.setObjectName("mutedText")
         self.status_label.setWordWrap(True)
@@ -264,6 +296,7 @@ class DuplicatesPage(QWidget):
         header = self.groups_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
+        header.setHighlightSections(False)
         header.setSortIndicatorShown(True)
         self.groups_table.setSortingEnabled(True)
         self.groups_table.setColumnWidth(0, 190)
@@ -275,8 +308,13 @@ class DuplicatesPage(QWidget):
         self.groups_table.selectionModel().currentRowChanged.connect(
             self._show_selected_result
         )
+        self.groups_table.horizontalHeader().sortIndicatorChanged.connect(
+            self._restore_selected_group
+        )
+        self._selected_group_identity: tuple[int, str] | None = None
         self.detail_title = QLabel("Select a result to see its files.")
         self.detail_title.setObjectName("sectionTitle")
+        self.detail_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.detail_summary = QLabel()
         self.detail_summary.setObjectName("mutedText")
         self.detail_summary.setWordWrap(True)
@@ -295,8 +333,10 @@ class DuplicatesPage(QWidget):
             QHeaderView.ResizeMode.Interactive
         )
         self.paths_table.horizontalHeader().setStretchLastSection(True)
-        self.paths_table.setColumnWidth(0, 480)
-        self.paths_table.setColumnWidth(1, 190)
+        self.paths_table.setColumnWidth(0, 170)
+        self.paths_table.setColumnWidth(1, 230)
+        self.paths_table.setColumnWidth(2, 420)
+        self.paths_table.setColumnWidth(3, 190)
         self.paths_table.setMinimumHeight(150)
         self.paths_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.paths_table.customContextMenuRequested.connect(
@@ -336,11 +376,14 @@ class DuplicatesPage(QWidget):
 
     def set_scan_result(self, result: ScanResult | None) -> None:
         self.analysis = None
+        self._selected_group_identity = None
         self.results_model.set_results((), ())
         self.paths_model.set_group(None)
         self.detail_title.setText("Select a result to see its files.")
+        self.detail_title.setToolTip("")
         self.detail_summary.clear()
         self.summary_label.clear()
+        self.analysis_duration_label.clear()
         self.status_label.clear()
         self.status_label.setToolTip("")
         self.activity_panel.stop()
@@ -364,9 +407,11 @@ class DuplicatesPage(QWidget):
 
     def set_analyzing(self, candidate_count: int | None = None) -> None:
         self.analysis = None
+        self._selected_group_identity = None
         self.results_model.set_results((), ())
         self.paths_model.set_group(None)
         self.summary_label.clear()
+        self.analysis_duration_label.clear()
         self.status_label.setToolTip("")
         self.find_button.setEnabled(False)
         self.personal_only.setEnabled(False)
@@ -383,8 +428,8 @@ class DuplicatesPage(QWidget):
             ),
         )
         self.status_label.setText(
-            "Same-size files are screened first. Large files can take much longer than small files; "
-            "no completion-time estimate is shown."
+            "Candidates are sampled first, then likely matches are verified with full SHA-256. "
+            "Large files can take longer."
         )
 
     def set_progress(self, progress: DuplicateProgress) -> None:
@@ -420,6 +465,7 @@ class DuplicatesPage(QWidget):
 
     def set_result(self, result: DuplicateAnalysis) -> None:
         self.analysis = result
+        self._selected_group_identity = None
         self.activity_panel.stop()
         self.personal_only.setEnabled(True)
         self.find_button.setEnabled(True)
@@ -429,9 +475,14 @@ class DuplicatesPage(QWidget):
         self.status_label.setToolTip("")
         self.summary_label.setText(
             f"{len(result.groups):,} verified duplicate group(s) · "
-            f"{format_size(result.potential_recoverable_bytes)} estimated potential recoverable space · "
-            f"Total analysis time: {result.elapsed_seconds:.1f} s"
+            f"{format_size(result.potential_recoverable_bytes)} potential savings"
         )
+        if result.elapsed_seconds is not None:
+            self.analysis_duration_label.setText(
+                f"Analysis time: {format_duration(result.elapsed_seconds)}"
+            )
+        else:
+            self.analysis_duration_label.clear()
         if result.groups and any(
             group.verified_copy_count < len(group.paths) for group in result.groups
         ):
@@ -442,13 +493,8 @@ class DuplicatesPage(QWidget):
             f"Checked {result.candidate_files:,} same-size candidate file(s); "
             f"SHA-256 hashed {result.hashed_files:,} distinct file(s), "
             f"reused {result.cached_files_reused:,} cached hash(es), and read "
-            f"{format_size(result.bytes_processed)}. "
-            f"{result.skipped_files:,} candidate file(s) were skipped or inaccessible; "
-            f"{len(result.unverified_files):,} are listed as unverified. "
-            "Savings are estimates, not guaranteed recoverable space. "
-            "Groups are verified by SHA-256 content; metadata cache reuse can miss edits that preserve "
-            "file identity, size, timestamps, and sampled content. "
-            "Zero-byte files contribute no savings." + hard_link_note
+            f"{format_size(result.bytes_processed)}; skipped {result.skipped_files:,}. "
+            "Savings count only distinct verified copies." + hard_link_note
         )
         if result.groups and result.unverified_files:
             self.result_state_label.setText(
@@ -462,8 +508,7 @@ class DuplicatesPage(QWidget):
             )
         elif result.groups:
             self.result_state_label.setText(
-                "Each verified row is a separate set of files with identical SHA-256 content. "
-                "Select a row to inspect every matching path."
+                "Verified with full SHA-256. Select a group to inspect its matching paths."
             )
         elif result.candidate_files == 0:
             self.result_state_label.setText(
@@ -522,6 +567,7 @@ class DuplicatesPage(QWidget):
     def _show_selected_result(self, current: QModelIndex) -> None:
         if not current.isValid():
             self.paths_model.set_group(None)
+            self._selected_group_identity = None
             self._set_path_actions_enabled(False)
             return
         source_index = self.results_proxy.mapToSource(current)
@@ -529,19 +575,56 @@ class DuplicatesPage(QWidget):
         self.paths_model.set_group(result)
         self._set_path_actions_enabled(self.paths_model.rowCount() > 0)
         if isinstance(result, DuplicateGroup):
-            self.detail_title.setText("Verified matching files")
+            self._selected_group_identity = (result.size, result.digest)
+            source_index = self.results_proxy.mapToSource(current)
+            group_number = source_index.row() + 1
+            filename = os.path.basename(result.paths[0])
+            self.detail_title.setText(
+                f"Selected: {filename} — Group {group_number:,} of "
+                f"{len(self.results_model.groups):,}"
+            )
+            self.detail_title.setToolTip(
+                f"SHA-256: {result.digest}\n{result.paths[0]}"
+            )
             self.detail_summary.setText(
                 f"{result.verified_copy_count:,} distinct verified copy/copies across "
                 f"{len(result.paths):,} path(s). Estimated potential savings: "
                 f"{format_size(result.recoverable_bytes)}."
             )
         else:
-            self.detail_title.setText("File could not be verified")
+            self._selected_group_identity = None
+            self.detail_title.setText(
+                f"Selected: {os.path.basename(result.path)} — Not verified"
+            )
+            self.detail_title.setToolTip(result.path)
             self.detail_summary.setText(
                 f"Not counted toward duplicate groups or savings. {result.reason}"
             )
         if self.paths_model.rowCount():
             self.paths_table.selectRow(0)
+
+    def _restore_selected_group(self, *_args: object) -> None:
+        identity = self._selected_group_identity
+        if identity is None:
+            return
+
+        def restore() -> None:
+            source_row = next(
+                (
+                    row
+                    for row, group in enumerate(self.results_model.groups)
+                    if (group.size, group.digest) == identity
+                ),
+                None,
+            )
+            if source_row is None:
+                return
+            source_index = self.results_model.index(source_row, 0)
+            proxy_index = self.results_proxy.mapFromSource(source_index)
+            if proxy_index.isValid():
+                self.groups_table.selectRow(proxy_index.row())
+
+        QTimer.singleShot(0, self, restore)
 
     def _selected_path(self) -> str | None:
         index = self.paths_table.currentIndex()
