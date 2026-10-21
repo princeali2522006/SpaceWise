@@ -35,15 +35,35 @@ class ScanModeTests(unittest.TestCase):
             return_value=str(self.root / "application-cache" / "hashes.sqlite3"),
         )
         self.cache_path_patcher.start()
+        self.history_path_patcher = patch(
+            "ui.main_window.default_history_path",
+            return_value=str(self.root / "application-cache" / "history.sqlite3"),
+        )
+        self.history_path_patcher.start()
         (self.root / "notes.txt").write_text("read-only sample", encoding="utf-8")
         (self.root / "Documents").mkdir()
         (self.root / "Documents" / "annual.txt").write_text("nested sample", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.cache_path_patcher.stop()
+        self.history_path_patcher.stop()
         self.temporary_directory.cleanup()
 
     def dispose_widget(self, widget: QWidget) -> None:
+        if isinstance(widget, MainWindow):
+            for worker in (
+                widget.scan_worker,
+                widget.duplicate_worker,
+                widget.cleanup_worker,
+            ):
+                if worker is not None and worker.isRunning():
+                    worker.cancel()
+                    worker.wait()
+            self.app.processEvents()
+            while widget.history_workers:
+                for worker in list(widget.history_workers):
+                    worker.wait()
+                self.app.processEvents()
         widget.close()
         widget.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -67,18 +87,18 @@ class ScanModeTests(unittest.TestCase):
         self.assertEqual(window.scan_result.total_size, sum(file.size for file in window.explorer.files))
         self.assertEqual(window.dashboard.result, window.scan_result)
         self.assertEqual(window.explorer.last_scan_root, window.scan_result.root_path)
-        window.close()
+        self.dispose_widget(window)
 
-    def test_all_five_navigation_pages_remain_available(self) -> None:
+    def test_all_six_navigation_pages_remain_available(self) -> None:
         window = MainWindow()
-        self.assertEqual(len(window.pages), 5)
-        self.assertEqual(len(window.nav_buttons), 5)
+        self.assertEqual(len(window.pages), 6)
+        self.assertEqual(len(window.nav_buttons), 6)
 
-        for index in range(5):
+        for index in range(6):
             window.nav_buttons[index].click()
             self.assertEqual(window.stack.currentIndex(), index)
             self.assertIs(window.stack.currentWidget(), window.pages[index])
-        window.close()
+        self.dispose_widget(window)
 
     def test_my_files_scan_deduplicates_overlapping_known_folder_roots(self) -> None:
         window = MainWindow()
@@ -94,7 +114,7 @@ class ScanModeTests(unittest.TestCase):
         self.assertEqual(window.scan_result.scan_scope, "Scan My Files")
         self.assertEqual(window.dashboard.result, window.scan_result)
         self.assertEqual(window.explorer.files, window.scan_result.files)
-        window.close()
+        self.dispose_widget(window)
 
     def test_drive_scan_keeps_os_usage_separate_from_scanned_files(self) -> None:
         drive = LocalDrive(
@@ -124,7 +144,7 @@ class ScanModeTests(unittest.TestCase):
         self.assertIn("capacity (Windows)", window.dashboard.drive_usage_label.text())
         self.assertEqual(window.dashboard.result, result)
         self.assertEqual(window.explorer.files, result.files)
-        window.close()
+        self.dispose_widget(window)
 
     def test_cancel_keeps_last_completed_dashboard_and_explorer_result(self) -> None:
         window = MainWindow()
@@ -157,7 +177,7 @@ class ScanModeTests(unittest.TestCase):
         self.assertIs(window.dashboard.result, previous_result)
         self.assertEqual(window.explorer.files, previous_result.files)
         self.assertIn("cancelled", window.dashboard.scan_status_label.text().casefold())
-        window.close()
+        self.dispose_widget(window)
 
     def test_duplicate_analysis_uses_latest_result_and_is_invalidated_by_new_scan(self) -> None:
         first = self.root / "duplicate-a.bin"
@@ -186,7 +206,7 @@ class ScanModeTests(unittest.TestCase):
 
         window._scan_completed(scan_folder(self.root))
         self.assertIsNone(window.duplicates.analysis)
-        window.close()
+        self.dispose_widget(window)
 
     def test_duplicate_analysis_can_be_limited_to_known_personal_roots(self) -> None:
         personal = self.root / "personal"
@@ -215,7 +235,7 @@ class ScanModeTests(unittest.TestCase):
             {str(personal_first), str(personal_second)},
         )
         self.assertNotIn(str(outside), analysis.groups[0].paths)
-        window.close()
+        self.dispose_widget(window)
 
     def test_duplicate_page_shows_unverified_paths_and_reasons(self) -> None:
         page = DuplicatesPage()

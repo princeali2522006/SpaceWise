@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -29,8 +30,14 @@ class ExplorerAndDashboardTests(unittest.TestCase):
         (self.root / "annual-report.txt").write_text("two", encoding="utf-8")
         (self.root / "picture.png").write_bytes(b"p" * 512)
         self.result = scan_folder(self.root)
+        self.history_path_patcher = patch(
+            "ui.main_window.default_history_path",
+            return_value=str(self.root / "app-data" / "SpaceWise" / "history.sqlite3"),
+        )
+        self.history_path_patcher.start()
 
     def tearDown(self) -> None:
+        self.history_path_patcher.stop()
         self.temporary_directory.cleanup()
 
     def _wait_for_filter(self, explorer: ExplorerPage) -> None:
@@ -435,6 +442,10 @@ class ExplorerAndDashboardTests(unittest.TestCase):
         self.assertIs(window.dashboard.result, self.result)
         self.assertIs(window.explorer.files, self.result.files)
         self.assertEqual(window.explorer.file_model.rowCount(), len(self.result.files))
+        while window.history_workers:
+            for worker in list(window.history_workers):
+                worker.wait()
+            self.app.processEvents()
         window.close()
 
     def test_scan_activity_shows_only_count_and_indeterminate_progress(self) -> None:

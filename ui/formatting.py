@@ -1,5 +1,7 @@
 """Shared display formatting helpers."""
 
+from datetime import datetime
+
 
 def format_size(size: int) -> str:
     value = float(size)
@@ -10,3 +12,10 @@ def format_size(size: int) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024
     return f"{value:.1f} TB"
+
+
+def format_scan_time(timestamp: str) -> str:
+    try:
+        return datetime.fromisoformat(timestamp).astimezone().strftime("%b %d, %Y · %H:%M")
+    except ValueError:
+        return timestamp

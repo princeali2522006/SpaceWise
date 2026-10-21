@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from core.scanner import ScanProgress, ScanResult
 from ui.activity_panel import ActivityPanel
-from ui.formatting import format_size
+from ui.formatting import format_scan_time, format_size
 
 
 PALETTE = {
@@ -503,13 +503,27 @@ class DashboardPage(QWidget):
         else:
             self.activity_panel.stop()
 
-    def set_result(self, result: ScanResult) -> None:
+    def set_result(
+        self,
+        result: ScanResult,
+        *,
+        historical: bool = False,
+        saved_at: str | None = None,
+    ) -> None:
         self.result = result
         self.scan_status_label.clear()
         self.scan_status_label.hide()
         self.empty_state.hide()
         self.results_area.show()
-        self.last_scan_label.setText(f"Last completed scan: {result.display_scope}")
+        if historical:
+            timestamp = (
+                f" · saved {format_scan_time(saved_at)}" if saved_at is not None else ""
+            )
+            self.last_scan_label.setText(
+                f"Viewing Saved Scan{timestamp}: {result.display_scope}"
+            )
+        else:
+            self.last_scan_label.setText(f"Last completed scan: {result.display_scope}")
         self.last_scan_label.setToolTip("\n".join(result.scan_roots))
         self.last_scan_label.show()
         if result.drive_usage is None:
@@ -517,8 +531,11 @@ class DashboardPage(QWidget):
             self.drive_usage_label.hide()
         else:
             usage = result.drive_usage
+            drive_context = "Drive capacity (Windows)"
+            if historical:
+                drive_context += " at scan time (may have changed)"
             self.drive_usage_label.setText(
-                f"Drive capacity (Windows): {format_size(usage.total)} total · "
+                f"{drive_context}: {format_size(usage.total)} total · "
                 f"{format_size(usage.used)} used · {format_size(usage.free)} free. "
                 "Scanned-file size below is the logical size of accessible file paths; "
                 "it need not match Windows used space."

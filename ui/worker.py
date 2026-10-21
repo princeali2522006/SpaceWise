@@ -2,9 +2,11 @@
 
 import threading
 from collections.abc import Sequence
+import sqlite3
 
 from PySide6.QtCore import QThread, Signal
 
+from core.history import HistoryLoadCancelled, ScanHistoryStore
 from core.recommendations import (
     RecommendationAnalysisCancelled,
     build_cleanup_recommendations,
@@ -14,7 +16,7 @@ from core.duplicates import (
     DuplicateAnalysisCancelled,
     analyze_duplicates,
 )
-from core.scanner import DriveUsage, ScannedFile, ScanCancelledError, scan_folders
+from core.scanner import DriveUsage, ScannedFile, ScanCancelledError, ScanResult, scan_folders
 
 
 class ScanWorker(QThread):
@@ -59,6 +61,69 @@ class ScanWorker(QThread):
             self.cancelled.emit(str(error))
         except (OSError, ValueError) as error:
             self.failed.emit(str(error))
+
+
+class ScanHistoryWorker(QThread):
+    completed = Signal(str, object)
+    failed = Signal(str, str)
+    cancelled = Signal(str, str)
+
+    def __init__(
+        self,
+        action: str,
+        database_path: str,
+        *,
+        result: ScanResult | None = None,
+        scan_id: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.action = action
+        self.store = ScanHistoryStore(database_path)
+        self.result = result
+        self.scan_id = scan_id
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def run(self) -> None:
+        try:
+            if self.action == "list":
+                payload = (self.store.list_scans(), self.store.stats())
+            elif self.action == "save":
+                if self.result is None:
+                    raise ValueError("No completed scan was provided for history.")
+                payload = self.store.save_scan(self.result)
+            elif self.action == "load":
+                if self.scan_id is None:
+                    raise ValueError("No saved scan was selected.")
+                payload = (
+                    self.scan_id,
+                    self.store.load_scan(
+                        self.scan_id,
+                        cancel_event=self._cancel_event,
+                    ),
+                )
+            elif self.action == "delete":
+                if self.scan_id is None:
+                    raise ValueError("No saved scan was selected.")
+                self.store.delete_scan(self.scan_id)
+                payload = (self.store.list_scans(), self.store.stats())
+            else:
+                raise ValueError(f"Unsupported scan-history operation: {self.action}")
+            self.completed.emit(self.action, payload)
+        except HistoryLoadCancelled as error:
+            self.cancelled.emit(self.action, str(error))
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            OverflowError,
+            sqlite3.Error,
+        ) as error:
+            self.failed.emit(self.action, str(error))
 
 
 class DuplicateWorker(QThread):

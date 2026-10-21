@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 from core.discovery import discover_user_folders
 from core.scanner import ScanProgress, ScanResult, ScannedFile
 from ui.activity_panel import ActivityPanel
-from ui.formatting import format_size
+from ui.formatting import format_scan_time, format_size
 
 
 HEADERS = ("Filename", "Size", "Category", "Full path")
@@ -267,7 +267,13 @@ class ExplorerPage(QWidget):
         self.last_scan_root = None
         self.path_label.setText("No scan yet — choose a folder on the Dashboard and scan it.")
 
-    def set_result(self, result: ScanResult | None) -> None:
+    def set_result(
+        self,
+        result: ScanResult | None,
+        *,
+        historical: bool = False,
+        saved_at: str | None = None,
+    ) -> None:
         if result is None:
             self.files = ()
             self.last_scan_root = None
@@ -289,7 +295,13 @@ class ExplorerPage(QWidget):
         previous_category = self.filter_combo.currentText()
         self.files = result.files
         self.last_scan_root = result.root_path
-        self.path_label.setText(f"Latest completed scan: {result.display_scope}")
+        if historical:
+            timestamp = (
+                f" · saved {format_scan_time(saved_at)}" if saved_at is not None else ""
+            )
+            self.path_label.setText(f"Viewing Saved Scan{timestamp}: {result.display_scope}")
+        else:
+            self.path_label.setText(f"Latest completed scan: {result.display_scope}")
         self.path_label.setToolTip("\n".join(result.scan_roots))
         self.search_feedback_label.clear()
         self.search_feedback_label.hide()

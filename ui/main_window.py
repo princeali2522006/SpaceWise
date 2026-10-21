@@ -1,5 +1,7 @@
 """Main application window and sidebar navigation."""
 
+from datetime import datetime
+
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QCloseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from core.discovery import discover_local_drives, discover_user_folders, refresh_drive_usage
 from core.duplicates import DuplicateAnalysis, DuplicateProgress
+from core.history import ScanHistoryStats, ScanHistorySummary, default_history_path
 from core.recommendations import CleanupRecommendations, RecommendationProgress
 from core.scanner import DriveUsage, ScanProgress, ScanResult
 from ui.cleanup_page import CleanupPage
@@ -34,8 +37,9 @@ from ui.dashboard_page import DashboardPage
 from ui.duplicates_page import DuplicatesPage
 from ui.explorer_page import ExplorerPage
 from ui.formatting import format_size
+from ui.history_page import HistoryPage
 from ui.placeholder_page import PlaceholderPage
-from ui.worker import CleanupWorker, DuplicateWorker, ScanWorker
+from ui.worker import CleanupWorker, DuplicateWorker, ScanHistoryWorker, ScanWorker
 
 
 SECTIONS = (
@@ -43,8 +47,10 @@ SECTIONS = (
     ("Explorer", "▤"),
     ("Duplicates", "▢"),
     ("Cleanup", "♧"),
+    ("History", "◷"),
     ("Settings", "⚙"),
 )
+HISTORY_PAGE_INDEX = 4
 
 
 class _ChevronProxyStyle(QProxyStyle):
@@ -89,9 +95,20 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 620)
         self.selected_folder: str | None = None
         self.scan_result: ScanResult | None = None
+        self._fresh_scan_result: ScanResult | None = None
+        self._fresh_duplicate_analysis: DuplicateAnalysis | None = None
+        self._fresh_cleanup_recommendations: CleanupRecommendations | None = None
         self.scan_worker: ScanWorker | None = None
         self.duplicate_worker: DuplicateWorker | None = None
         self.cleanup_worker: CleanupWorker | None = None
+        self.history_workers: list[ScanHistoryWorker] = []
+        self.history_database_path = default_history_path()
+        self._history_loaded = False
+        self._is_historical_snapshot = False
+        self._historical_scan_id: int | None = None
+        self._pending_history_operations: list[
+            tuple[str, ScanResult | None, int | None]
+        ] = []
         self.active_scan_scope: str | None = None
         self._close_after_scan = False
         self.local_drives = discover_local_drives()
@@ -122,11 +139,13 @@ class MainWindow(QMainWindow):
         self.explorer = ExplorerPage()
         self.duplicates = DuplicatesPage()
         self.cleanup = CleanupPage()
+        self.history = HistoryPage()
         self.pages = [
             self.dashboard,
             self.explorer,
             self.duplicates,
             self.cleanup,
+            self.history,
             PlaceholderPage("Settings", "Application preferences will be available here."),
         ]
 
@@ -141,13 +160,13 @@ class MainWindow(QMainWindow):
             self.nav_buttons.append(button)
             sidebar_layout.addWidget(button)
         sidebar_layout.addStretch()
-        version = QLabel("SpaceWise  •  Sprint 2")
+        version = QLabel("SpaceWise  •  Sprint 3")
         version.setObjectName("sidebarFooter")
         sidebar_layout.addWidget(version)
 
         for page in self.pages:
             self.stack.addWidget(page)
-        self.nav_group.idClicked.connect(self.stack.setCurrentIndex)
+        self.nav_group.idClicked.connect(self._navigate_to_page)
         self.nav_buttons[0].setChecked(True)
         self.dashboard.select_folder_requested.connect(self.select_folder)
         self.dashboard.scan_requested.connect(self.scan_selected_folder)
@@ -160,8 +179,35 @@ class MainWindow(QMainWindow):
         self.cleanup.analyze_requested.connect(self.analyze_cleanup)
         self.cleanup.cancel_requested.connect(self.cancel_cleanup_analysis)
         self.dashboard.open_category_requested.connect(self.open_category_in_explorer)
+        self.history.open_scan_requested.connect(self.open_historical_scan)
+        self.history.rescan_requested.connect(self.rescan_historical_scan)
+        self.history.delete_scan_requested.connect(self.delete_historical_scan)
+        self.history.refresh_requested.connect(self.refresh_scan_history)
+        self.history.cancel_requested.connect(self.cancel_history_load)
         root_layout.addWidget(sidebar)
-        root_layout.addWidget(self.stack, 1)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        self.saved_scan_banner = QFrame()
+        self.saved_scan_banner.setObjectName("savedScanBanner")
+        banner_layout = QHBoxLayout(self.saved_scan_banner)
+        banner_layout.setContentsMargins(18, 8, 18, 8)
+        self.saved_scan_label = QLabel()
+        self.saved_scan_label.setObjectName("mutedText")
+        banner_layout.addWidget(self.saved_scan_label, 1)
+        self.rescan_saved_button = QPushButton("Rescan Location")
+        self.rescan_saved_button.setObjectName("secondaryButton")
+        self.rescan_saved_button.clicked.connect(self._rescan_active_saved_scan)
+        banner_layout.addWidget(self.rescan_saved_button)
+        self.exit_saved_button = QPushButton("Exit Saved Scan")
+        self.exit_saved_button.setObjectName("secondaryButton")
+        self.exit_saved_button.clicked.connect(self.exit_saved_scan)
+        banner_layout.addWidget(self.exit_saved_button)
+        self.saved_scan_banner.hide()
+        content_layout.addWidget(self.saved_scan_banner)
+        content_layout.addWidget(self.stack, 1)
+        root_layout.addWidget(content, 1)
         self.setCentralWidget(root)
 
     def _apply_styles(self) -> None:
@@ -179,6 +225,9 @@ class MainWindow(QMainWindow):
             #sidebar { background: #f6f7f9; border-right: 1px solid #e7e9ed; }
             #brand { font-size: 16pt; font-weight: 700; padding: 2px 6px; }
             #sidebarFooter { color: #9aa1ab; font-size: 8pt; padding: 8px 5px; }
+            #historyCard { background: #ffffff; border: 1px solid #e7e9ed; border-radius: 8px; }
+            #savedScanBanner { background: #f6f7f9; border-bottom: 1px solid #e7e9ed; }
+            #historyWarning { color: #8b4b12; font-size: 9pt; }
             QPushButton#navButton {
                 text-align: left; padding: 10px 11px; border: 0; border-radius: 7px;
                 color: #434953; background: transparent; font-size: 9.5pt;
@@ -468,6 +517,9 @@ class MainWindow(QMainWindow):
         if self.scan_worker is not None and self.scan_worker.isRunning():
             return
         self.active_scan_scope = scope
+        if self._is_historical_snapshot:
+            self.rescan_saved_button.setEnabled(False)
+            self.exit_saved_button.setEnabled(False)
         self.dashboard.set_scanning(True, scope)
         self.explorer.set_scanning()
         self.scan_worker = ScanWorker(
@@ -497,6 +549,10 @@ class MainWindow(QMainWindow):
             self.explorer.set_cancelling()
 
     def find_duplicates(self, personal_only: bool) -> None:
+        if self._is_historical_snapshot:
+            if self.scan_result is not None:
+                self.duplicates.set_historical_result(self.scan_result)
+            return
         if self.scan_worker is not None and self.scan_worker.isRunning():
             self.duplicates.set_failed("Wait for the active scan to finish first.")
             return
@@ -530,6 +586,10 @@ class MainWindow(QMainWindow):
             self.duplicates.cancel_button.setText("Cancelling…")
 
     def analyze_cleanup(self, age_threshold_days: int, large_file_threshold_bytes: int) -> None:
+        if self._is_historical_snapshot:
+            if self.scan_result is not None:
+                self.cleanup.set_historical_result(self.scan_result)
+            return
         if self.scan_worker is not None and self.scan_worker.isRunning():
             self.cleanup.set_failed("Wait for the active scan to finish first.")
             return
@@ -565,6 +625,7 @@ class MainWindow(QMainWindow):
             self.cleanup.set_failed("The analyzer returned an unexpected result.")
             return
         self.cleanup.set_result(result)
+        self._fresh_cleanup_recommendations = result
         if self.duplicates.analysis is not None:
             self.cleanup.set_duplicate_analysis(self.duplicates.analysis)
 
@@ -574,18 +635,14 @@ class MainWindow(QMainWindow):
 
     def _cleanup_finished(self) -> None:
         self.cleanup_worker = None
-        if self._close_after_scan and (
-            (self.scan_worker is None or not self.scan_worker.isRunning())
-            and (self.duplicate_worker is None or not self.duplicate_worker.isRunning())
-        ):
-            self._close_after_scan = False
-            self.close()
+        self._maybe_finish_close()
 
     def _duplicates_completed(self, result: object) -> None:
         if not isinstance(result, DuplicateAnalysis):
             self.duplicates.set_failed("The analyzer returned an unexpected result.")
             return
         self.duplicates.set_result(result)
+        self._fresh_duplicate_analysis = result
         self.cleanup.set_duplicate_analysis(result)
 
     def _duplicates_progress(self, progress: object) -> None:
@@ -594,24 +651,308 @@ class MainWindow(QMainWindow):
 
     def _duplicates_finished(self) -> None:
         self.duplicate_worker = None
-        if self._close_after_scan and (
-            (self.scan_worker is None or not self.scan_worker.isRunning())
-            and (self.cleanup_worker is None or not self.cleanup_worker.isRunning())
-        ):
-            self._close_after_scan = False
-            self.close()
+        self._maybe_finish_close()
 
     def _scan_completed(self, result: object) -> None:
         if not isinstance(result, ScanResult):
             QMessageBox.critical(self, "Scan error", "The scanner returned an unexpected result.")
             return
         self.scan_result = result
+        self._fresh_scan_result = result
+        self._fresh_duplicate_analysis = None
+        self._fresh_cleanup_recommendations = None
+        self._is_historical_snapshot = False
+        self._historical_scan_id = None
+        self.saved_scan_banner.hide()
+        self.rescan_saved_button.setEnabled(True)
+        self.exit_saved_button.setEnabled(True)
         self.duplicates.set_scan_result(result)
         self.cleanup.set_scan_result(result)
         self.dashboard.set_result(result)
         self.explorer.set_result(result)
+        self.history.set_busy(
+            f"Saving {len(result.files):,} scanned-file records to history…"
+        )
+        self._start_history_worker("save", result=result)
+
+    def refresh_scan_history(self) -> None:
+        self.history.set_busy("Loading saved scans…")
+        self._start_history_worker("list")
+
+    def open_historical_scan(self, scan_id: int) -> None:
+        record = self.history.get_record(scan_id)
+        if record is None:
+            self.history.set_error("That saved scan is no longer in the list. Refresh history.")
+            return
+        if record.load_error is not None:
+            self.history.set_error(record.load_error)
+            return
+        if any(worker.isRunning() for worker in self.history_workers):
+            self.history.status_label.setText(
+                "Wait for the current scan-history operation to finish."
+            )
+            return
+        if self._scan_or_analysis_running():
+            self.history.set_error(
+                "Wait for the active scan or analysis to finish before opening a saved scan."
+            )
+            return
+        if not self._is_historical_snapshot and self.scan_result is not None:
+            self._fresh_scan_result = self.scan_result
+            self._fresh_duplicate_analysis = self.duplicates.analysis
+            self._fresh_cleanup_recommendations = self.cleanup.recommendations
+        self.history.set_busy("Loading saved scan metadata…", cancellable=True)
+        self._start_history_worker("load", scan_id=scan_id)
+
+    def cancel_history_load(self) -> None:
+        worker = next(
+            (
+                worker
+                for worker in self.history_workers
+                if worker.action == "load" and worker.isRunning()
+            ),
+            None,
+        )
+        if worker is not None:
+            worker.cancel()
+            self.history.cancel_button.setEnabled(False)
+            self.history.cancel_button.setText("Cancelling…")
+
+    def _rescan_active_saved_scan(self) -> None:
+        if self._historical_scan_id is not None:
+            self.rescan_historical_scan(self._historical_scan_id)
+
+    def exit_saved_scan(self) -> None:
+        if not self._is_historical_snapshot:
+            return
+        if self.scan_worker is not None and self.scan_worker.isRunning():
+            return
+        self._is_historical_snapshot = False
+        self._historical_scan_id = None
+        self.saved_scan_banner.hide()
+        self.scan_result = self._fresh_scan_result
+        if self.scan_result is None:
+            self.dashboard.result = None
+            self.dashboard.show_empty_state()
+            self.explorer.set_result(None)
+            self.duplicates.set_scan_result(None)
+            self.cleanup.set_scan_result(None)
+            return
+        self.dashboard.set_result(self.scan_result)
+        self.explorer.set_result(self.scan_result)
+        self.duplicates.set_scan_result(self.scan_result)
+        if self._fresh_duplicate_analysis is not None:
+            self.duplicates.set_result(self._fresh_duplicate_analysis)
+        self.cleanup.set_scan_result(self.scan_result)
+        if self._fresh_cleanup_recommendations is not None:
+            self.cleanup.set_result(self._fresh_cleanup_recommendations)
+        if self._fresh_duplicate_analysis is not None:
+            self.cleanup.set_duplicate_analysis(self._fresh_duplicate_analysis)
+
+    def rescan_historical_scan(self, scan_id: int) -> None:
+        record = self.history.get_record(scan_id)
+        if record is None:
+            self.history.set_error("That saved scan is no longer in the list. Refresh history.")
+            return
+        if self._scan_or_analysis_running():
+            self.history.set_error(
+                "Wait for the active scan or analysis to finish before starting another scan."
+            )
+            return
+        roots = record.requested_roots or record.scan_roots
+        if not roots:
+            self.history.set_error("The saved scan has no locations available to rescan.")
+            return
+        is_drive_scan = record.scan_scope.startswith("Drive scan:")
+        drive_usage = None
+        if is_drive_scan:
+            try:
+                drive_usage = refresh_drive_usage(roots[0])
+            except OSError as error:
+                self.history.set_error(f"Could not access the saved drive: {error}")
+                return
+        self._start_scan(
+            roots,
+            record.scan_scope,
+            drive_usage=drive_usage,
+            stay_on_volume=is_drive_scan,
+            strict_roots=record.scan_scope != "Scan My Files",
+        )
+        self.nav_buttons[0].setChecked(True)
+        self.stack.setCurrentIndex(0)
+
+    def delete_historical_scan(self, scan_id: int) -> None:
+        record = self.history.get_record(scan_id)
+        if record is None:
+            self.history.set_error("That saved scan is no longer in the list. Refresh history.")
+            return
+        choice = QMessageBox.question(
+            self,
+            "Remove saved scan",
+            "Remove this saved scan from SpaceWise history? Scanned files will not be changed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        self.history.set_busy("Removing saved scan…")
+        self._start_history_worker("delete", scan_id=scan_id)
+
+    def _start_history_worker(
+        self,
+        action: str,
+        *,
+        result: ScanResult | None = None,
+        scan_id: int | None = None,
+    ) -> None:
+        active_workers = [worker for worker in self.history_workers if worker.isRunning()]
+        if active_workers:
+            if action != "list" or not any(
+                pending_action == "list"
+                for pending_action, _, _ in self._pending_history_operations
+            ):
+                self._pending_history_operations.append((action, result, scan_id))
+            self.history.status_label.setText(
+                "Scan-history operation queued until the current operation finishes."
+            )
+            return
+        worker = ScanHistoryWorker(
+            action,
+            self.history_database_path,
+            result=result,
+            scan_id=scan_id,
+        )
+        self.history_workers.append(worker)
+        worker.completed.connect(self._history_completed)
+        worker.failed.connect(self._history_failed)
+        worker.cancelled.connect(self._history_cancelled)
+        worker.finished.connect(self._history_finished)
+        worker.start()
+
+    def _navigate_to_page(self, index: int) -> None:
+        self.stack.setCurrentIndex(index)
+        if index == HISTORY_PAGE_INDEX and not self._history_loaded:
+            self.refresh_scan_history()
+
+    def _history_completed(
+        self,
+        action: str,
+        payload: object,
+    ) -> None:
+        if action == "list" or action == "delete":
+            if (
+                isinstance(payload, tuple)
+                and len(payload) == 2
+                and isinstance(payload[0], tuple)
+                and isinstance(payload[1], ScanHistoryStats)
+            ):
+                records = payload[0]
+                if all(isinstance(record, ScanHistorySummary) for record in records):
+                    self.history.set_records(records, payload[1])
+                    self._history_loaded = True
+                    if action == "delete":
+                        self.history.status_label.setText("Saved scan removed.")
+                    return
+            self.history.set_error("Scan history returned an unexpected response.")
+            return
+        if action == "save":
+            if not isinstance(payload, ScanHistorySummary):
+                self.history.set_error("Scan history returned an unexpected save response.")
+                return
+            self.history.status_label.setText("Completed scan saved to history.")
+            self.refresh_scan_history()
+            return
+        if action == "load":
+            if (
+                not isinstance(payload, tuple)
+                or len(payload) != 2
+                or not isinstance(payload[0], int)
+                or not isinstance(payload[1], ScanResult)
+            ):
+                self.history.set_error("Scan history returned an unexpected saved scan.")
+                return
+            record = self.history.get_record(payload[0])
+            if record is None:
+                self.history.set_error("The saved scan details are no longer available.")
+                return
+            scan_result = payload[1]
+            self.scan_result = scan_result
+            self._is_historical_snapshot = True
+            self._historical_scan_id = payload[0]
+            self.dashboard.set_result(
+                scan_result,
+                historical=True,
+                saved_at=record.saved_at,
+            )
+            self.explorer.set_result(
+                scan_result,
+                historical=True,
+                saved_at=record.saved_at,
+            )
+            self.duplicates.set_historical_result(scan_result)
+            self.cleanup.set_historical_result(scan_result)
+            try:
+                completed = datetime.fromisoformat(record.completed_at).astimezone()
+                completed_text = completed.strftime("%b %d, %Y")
+            except ValueError:
+                completed_text = record.completed_at
+            self.saved_scan_label.setText(
+                f"Viewing Saved Scan — {record.root_path} — {completed_text}"
+            )
+            self.saved_scan_banner.show()
+            self.nav_buttons[0].setChecked(True)
+            self.stack.setCurrentIndex(0)
+            self.history.set_idle(
+                "Viewing Saved Scan. Rescan before analyzing current files."
+            )
+            return
+        self.history.set_error(f"Unsupported scan-history response: {action}")
+
+    def _history_failed(
+        self,
+        action: str,
+        message: str,
+    ) -> None:
+        self.history.set_error(message)
+        if action == "save":
+            QMessageBox.warning(
+                self,
+                "Could not save scan history",
+                f"The completed scan remains available in this session, but was not saved: {message}",
+            )
+
+    def _history_cancelled(self, action: str, message: str) -> None:
+        if action == "load":
+            self.history.set_idle(message or "Loading saved scan was cancelled.")
+
+    def _history_finished(self) -> None:
+        self.history_workers = [
+            worker for worker in self.history_workers if worker.isRunning()
+        ]
+        if self._pending_history_operations and not self.history_workers:
+            action, result, scan_id = self._pending_history_operations.pop(0)
+            self._start_history_worker(action, result=result, scan_id=scan_id)
+        self._maybe_finish_close()
+
+    def _scan_or_analysis_running(self) -> bool:
+        return any(
+            worker is not None and worker.isRunning()
+            for worker in (self.scan_worker, self.duplicate_worker, self.cleanup_worker)
+        )
+
+    def _maybe_finish_close(self) -> None:
+        if not self._close_after_scan:
+            return
+        if self._scan_or_analysis_running() or any(
+            worker.isRunning() for worker in self.history_workers
+        ):
+            return
+        self._close_after_scan = False
+        self.close()
 
     def _scan_failed(self, message: str) -> None:
+        self.rescan_saved_button.setEnabled(True)
+        self.exit_saved_button.setEnabled(True)
         scope = self.active_scan_scope or "requested scan"
         self.dashboard.set_scan_failed(scope, message)
         self.explorer.set_scan_failed(scope, message)
@@ -623,20 +964,19 @@ class MainWindow(QMainWindow):
             self.explorer.set_scan_progress(progress)
 
     def _scan_cancelled(self, message: str) -> None:
+        self.rescan_saved_button.setEnabled(True)
+        self.exit_saved_button.setEnabled(True)
         scope = self.active_scan_scope or "requested scan"
         self.dashboard.set_scan_cancelled(scope, message)
         self.explorer.set_scan_cancelled(scope, message)
 
     def _scan_finished(self) -> None:
         self.dashboard.set_scanning(False)
+        self.rescan_saved_button.setEnabled(True)
+        self.exit_saved_button.setEnabled(True)
         self.scan_worker = None
         self.active_scan_scope = None
-        if self._close_after_scan and (
-            (self.duplicate_worker is None or not self.duplicate_worker.isRunning())
-            and (self.cleanup_worker is None or not self.cleanup_worker.isRunning())
-        ):
-            self._close_after_scan = False
-            self.close()
+        self._maybe_finish_close()
 
     def _drive_options(self) -> tuple[tuple[str, str], ...]:
         return tuple(
@@ -659,7 +999,8 @@ class MainWindow(QMainWindow):
             self.duplicate_worker is not None and self.duplicate_worker.isRunning()
         )
         cleanup_running = self.cleanup_worker is not None and self.cleanup_worker.isRunning()
-        if scan_running or duplicates_running or cleanup_running:
+        history_running = any(worker.isRunning() for worker in self.history_workers)
+        if scan_running or duplicates_running or cleanup_running or history_running:
             self._close_after_scan = True
             if scan_running:
                 self.scan_worker.cancel()
@@ -667,6 +1008,9 @@ class MainWindow(QMainWindow):
                 self.duplicate_worker.cancel()
             if cleanup_running:
                 self.cleanup_worker.cancel()
+            for worker in self.history_workers:
+                if worker.action == "load":
+                    worker.cancel()
             event.ignore()
             return
         super().closeEvent(event)

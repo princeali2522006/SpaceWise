@@ -405,6 +405,18 @@ class DuplicatesPage(QWidget):
                 "No duplicate analysis yet. Select Find Duplicates to compare scanned files."
             )
 
+    def set_historical_result(self, result: ScanResult) -> None:
+        self.set_scan_result(result)
+        self.find_button.setEnabled(False)
+        self.personal_only.setEnabled(False)
+        self.status_label.setText(
+            "Saved metadata may be out of date. Rescan the location before verifying "
+            "current file contents."
+        )
+        self.result_state_label.setText(
+            "Duplicate verification is unavailable for saved scans. Rescan to continue."
+        )
+
     def set_analyzing(self, candidate_count: int | None = None) -> None:
         self.analysis = None
         self._selected_group_identity = None

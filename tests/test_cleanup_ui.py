@@ -34,12 +34,21 @@ class CleanupPageTests(unittest.TestCase):
         self.root = Path(self.temporary_directory.name)
         self.pages: list[CleanupPage] = []
         self.windows: list[MainWindow] = []
+        self.history_path_patcher = patch(
+            "ui.main_window.default_history_path",
+            return_value=str(self.root / "app-data" / "SpaceWise" / "history.sqlite3"),
+        )
+        self.history_path_patcher.start()
 
     def tearDown(self) -> None:
         for page in self.pages:
             page.close()
             page.deleteLater()
         for window in self.windows:
+            while window.history_workers:
+                for worker in list(window.history_workers):
+                    worker.wait()
+                self.app.processEvents()
             window.close()
             window.deleteLater()
         self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -47,6 +56,7 @@ class CleanupPageTests(unittest.TestCase):
         self.pages.clear()
         self.windows.clear()
         gc.collect()
+        self.history_path_patcher.stop()
         self.temporary_directory.cleanup()
 
     def _new_page(self) -> CleanupPage:

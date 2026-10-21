@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import heapq
 import os
 from pathlib import Path
@@ -72,6 +73,8 @@ class ScanResult:
     drive_usage: DriveUsage | None = None
     hard_link_paths: int = 0
     skipped_files: int = 0
+    requested_roots: tuple[str, ...] = ()
+    completed_at: str = ""
 
     @property
     def total_size(self) -> int:
@@ -423,6 +426,8 @@ def scan_folders(
         current_directory=pending[-1] if pending else (valid_roots[-1] if valid_roots else ""),
     )
 
+    completed_at = datetime.now(timezone.utc).isoformat()
+    elapsed_seconds = time.perf_counter() - started
     return ScanResult(
         root_path=root_path,
         files=files_result,
@@ -431,7 +436,7 @@ def scan_folders(
         subfolder_count=len(folders_size),
         largest_files=largest_files,
         scanned_size=scanned_size,
-        elapsed_seconds=time.perf_counter() - started,
+        elapsed_seconds=elapsed_seconds,
         inaccessible_items=inaccessible_items,
         inaccessible_directories=inaccessible_directories,
         skipped_directories=skipped_directories,
@@ -440,6 +445,8 @@ def scan_folders(
         drive_usage=drive_usage,
         hard_link_paths=hard_link_paths,
         skipped_files=skipped_files,
+        requested_roots=roots,
+        completed_at=completed_at,
     )
 
 

@@ -549,6 +549,17 @@ class CleanupPage(QWidget):
         )
         self.empty_state_label.show()
 
+    def set_historical_result(self, result: ScanResult) -> None:
+        self.set_scan_result(result)
+        self.analyze_button.setEnabled(False)
+        self.empty_state_label.setText(
+            "Recommendations use current file metadata. Rescan this location before "
+            "analyzing a saved scan."
+        )
+        self.status_label.setText(
+            "Historical paths may no longer exist or match the saved metadata."
+        )
+
     def _reset_metrics(self) -> None:
         self.duplicate_metric_value.setText("Pending")
         self.duplicate_metric_detail.setText("Potential savings: unavailable")
