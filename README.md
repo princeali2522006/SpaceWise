@@ -1,6 +1,84 @@
 # SpaceWise
 
-SpaceWise is a read-only Windows desktop app for understanding storage. Its six pages provide selected-folder, known-user-folder and local-drive scans; interactive category and subfolder analysis; a searchable, sortable file explorer; background duplicate verification; cautious review-only cleanup opportunities; and persistent Scan History. The pages stay aligned while preserving evidence about what was scanned, what was skipped, and what is still pending verification.
+**Understand your storage. Find what matters. Clean up with confidence.**
+
+SpaceWise is a Windows desktop application built with Python and PySide6 that helps users understand how their storage is being used, discover duplicate files, and identify potential cleanup opportunities.
+
+Unlike automatic cleanup tools, SpaceWise takes a **read-only, review-first approach**. It provides information and recommendations without deleting, moving, or modifying the user's files.
+
+## Why I Built SpaceWise
+
+SpaceWise started with a simple problem: my laptop was running low on storage, and I couldn't easily tell which files and folders were taking up the most space.
+
+I wanted more than a basic file-size viewer. I wanted an application that could explain my storage usage, identify unnecessary duplication, and help me make informed decisions about what to keep.
+
+I developed SpaceWise through an iterative process, building features in sprints, testing them against real folders, identifying problems, and refining the application based on the results.
+
+## Features
+
+### Storage Dashboard
+Analyze selected folders, Windows user folders, or local drives. Explore storage categories, largest files, and folder-level breakdowns.
+
+### File Explorer
+Browse scanned files with searching, sorting, category filters, and folder navigation. Inspect file locations without modifying their contents.
+
+### Verified Duplicate Detection
+Identify potential duplicate files using size-based filtering, bounded content sampling, and full SHA-256 verification. Distinguish verified duplicates from unverified candidates.
+
+### Cleanup Recommendations
+Review large files, older installer-like files, and verified duplicates that may deserve attention. Recommendations are informational; SpaceWise never automatically deletes files.
+
+### Scan History
+Automatically save completed scans, reopen historical results without rescanning, compare records from different scan times, and rescan locations when current information is needed.
+
+### Background Scanning
+Run scans without freezing the interface, monitor progress, and cancel operations when necessary.
+
+## Application Preview
+
+### Dashboard
+![SpaceWise Dashboard](docs/images/dashboard.png)
+
+### File Explorer
+![SpaceWise File Explorer](docs/images/explorer.png)
+
+### Scan History
+![SpaceWise Scan History](docs/images/history.png)
+
+## Technology Stack
+
+- **Python** — Application logic and filesystem analysis
+- **PySide6** — Windows desktop interface
+- **SQLite** — Persistent scan history and duplicate hash caching
+- **SHA-256** — Duplicate content verification
+- **Git and GitHub** — Version control and project history
+
+## Development Approach
+
+SpaceWise follows an Agile-inspired, iterative development process.
+
+Each sprint introduces working functionality, followed by manual testing, bug identification, and targeted improvements.
+
+Development milestones include:
+
+- **Sprint 1:** Initial desktop application, scanning, Dashboard, and Explorer.
+- **Sprint 1.1:** Interactive category analysis and Explorer improvements.
+- **Sprint 2:** Duplicate verification and cleanup recommendations.
+- **Sprint 2.1:** Reliability, performance, and interface refinements.
+- **Sprint 3:** Persistent Scan History and saved results.
+- **Sprint 3.1:** Scanning backend architecture, fallback handling, and recursive-scanner optimization.
+
+**Current limitation:** SpaceWise uses recursive filesystem scanning. Fast NTFS/MFT enumeration has been investigated but is not yet implemented.
+
+## Safety First
+
+SpaceWise is designed to analyze files, not manage or delete them automatically.
+
+It does not delete, rename, move, overwrite, or execute scanned files. Users remain responsible for deciding whether any recommended cleanup action is appropriate.
+
+---
+
+
 
 ## Requirements
 
