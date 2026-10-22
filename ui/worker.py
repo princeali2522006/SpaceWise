@@ -16,7 +16,14 @@ from core.duplicates import (
     DuplicateAnalysisCancelled,
     analyze_duplicates,
 )
-from core.scanner import DriveUsage, ScannedFile, ScanCancelledError, ScanResult, scan_folders
+from core.scanner import (
+    DriveUsage,
+    ScanProgress,
+    ScannedFile,
+    ScanCancelledError,
+    ScanResult,
+)
+from core.scanner_backends import create_backend, select_backend
 
 
 class ScanWorker(QThread):
@@ -47,7 +54,24 @@ class ScanWorker(QThread):
 
     def run(self) -> None:
         try:
-            result = scan_folders(
+            selection = select_backend(
+                self.folders,
+                scan_scope=self.scan_scope,
+                stay_on_volume=self.stay_on_volume,
+            )
+            if self._cancel_event.is_set():
+                raise ScanCancelledError(
+                    "Scan cancelled. The last completed scan is unchanged."
+                )
+            self.progress.emit(
+                ScanProgress(
+                    files_scanned=0,
+                    elapsed_seconds=0.0,
+                    backend_label=selection.label,
+                )
+            )
+            backend = create_backend(selection)
+            result = backend.scan(
                 self.folders,
                 scan_scope=self.scan_scope,
                 drive_usage=self.drive_usage,

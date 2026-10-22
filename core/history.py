@@ -44,6 +44,7 @@ class ScanHistorySummary:
     subfolder_count: int
     drive_usage: DriveUsage | None
     load_error: str | None = None
+    scanner_backend: str = "Standard scan"
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ def _file_from_dict(data: dict[str, object]) -> ScannedFile:
 class ScanHistoryStore:
     """Stores only completed scan metadata in an app-owned SQLite database."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         self.path = os.fspath(path) if path is not None else default_history_path()
@@ -157,7 +158,8 @@ class ScanHistoryStore:
                         drive_free INTEGER,
                         categories_json TEXT NOT NULL,
                         subfolders_json TEXT NOT NULL,
-                        largest_files_json TEXT NOT NULL
+                        largest_files_json TEXT NOT NULL,
+                        scanner_backend TEXT NOT NULL DEFAULT 'Standard scan'
                     )
                     """
                 )
@@ -235,6 +237,15 @@ class ScanHistoryStore:
                     raise ValueError(
                         "The older scan-history database has no scanned file records table."
                     )
+            columns = {
+                str(column["name"])
+                for column in connection.execute("PRAGMA table_info(scans)")
+            }
+            if "scanner_backend" not in columns:
+                connection.execute(
+                    "ALTER TABLE scans ADD COLUMN scanner_backend "
+                    "TEXT NOT NULL DEFAULT 'Standard scan'"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS scanned_files_scan_id ON scanned_files(scan_id)"
             )
@@ -286,6 +297,7 @@ class ScanHistoryStore:
             subfolder_count=int(row["subfolder_count"]),
             drive_usage=usage,
             load_error=load_error,
+            scanner_backend=str(row["scanner_backend"]),
         )
 
     def save_scan(self, result: ScanResult) -> ScanHistorySummary:
@@ -340,8 +352,9 @@ class ScanHistoryStore:
                         file_count, total_size, elapsed_seconds, inaccessible_items,
                         inaccessible_directories, skipped_directories, hard_link_paths,
                         skipped_files, subfolder_count, drive_total, drive_used, drive_free,
-                        categories_json, subfolders_json, largest_files_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        categories_json, subfolders_json, largest_files_json,
+                        scanner_backend
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         started_text,
@@ -369,6 +382,7 @@ class ScanHistoryStore:
                         categories_json,
                         subfolders_json,
                         largest_files_json,
+                        result.scanner_backend,
                     ),
                 )
                 scan_id = int(cursor.lastrowid)
@@ -519,6 +533,7 @@ class ScanHistoryStore:
             skipped_files=summary.skipped_files,
             requested_roots=summary.requested_roots,
             completed_at=summary.completed_at,
+            scanner_backend=summary.scanner_backend,
         )
 
     def delete_scan(self, scan_id: int) -> None:

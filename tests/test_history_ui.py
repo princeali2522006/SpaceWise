@@ -91,7 +91,10 @@ class ScanHistoryUiTests(unittest.TestCase):
         self.wait_for_workers(window, "history_workers")
 
         with (
-            patch("ui.worker.scan_folders", side_effect=OSError("saved location unavailable")),
+            patch(
+                "core.scanner_backends.RecursiveScanner.scan",
+                side_effect=OSError("saved location unavailable"),
+            ),
             patch("ui.main_window.QMessageBox.warning"),
         ):
             window.rescan_historical_scan(record.scan_id)
@@ -170,6 +173,21 @@ class ScanHistoryUiTests(unittest.TestCase):
         self.assertTrue(window.saved_scan_banner.isHidden())
         self.assertFalse(window.duplicates.find_button.isEnabled())
         self.assertTrue((self.sample_folder / "example.txt").exists())
+        self.dispose_widget(window)
+
+    def test_selected_backend_label_is_visible_and_saved(self) -> None:
+        result = replace(
+            scan_folder(self.sample_folder),
+            scanner_backend="Standard scan · fast NTFS scan unavailable",
+        )
+        window = MainWindow()
+
+        window._scan_completed(result)
+        self.wait_for_workers(window, "history_workers")
+
+        self.assertIn("fast NTFS scan unavailable", window.dashboard.last_scan_label.text())
+        self.assertIn("fast NTFS scan unavailable", window.explorer.path_label.text())
+        self.assertEqual(window.history.records[0].scanner_backend, result.scanner_backend)
         self.dispose_widget(window)
 
     def test_failed_history_load_restores_controls(self) -> None:

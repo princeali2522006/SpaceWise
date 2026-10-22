@@ -523,7 +523,9 @@ class DashboardPage(QWidget):
                 f"Viewing Saved Scan{timestamp}: {result.display_scope}"
             )
         else:
-            self.last_scan_label.setText(f"Last completed scan: {result.display_scope}")
+            self.last_scan_label.setText(
+                f"Last completed scan · {result.scanner_backend}: {result.display_scope}"
+            )
         self.last_scan_label.setToolTip("\n".join(result.scan_roots))
         self.last_scan_label.show()
         if result.drive_usage is None:
@@ -739,12 +741,11 @@ class DashboardPage(QWidget):
         self.scan_status_label.show()
 
     def set_scan_progress(self, progress: ScanProgress) -> None:
-        folder = os.path.basename(progress.current_directory.rstrip("\\/")) or progress.current_directory
-        self.activity_panel.set_details(
-            f"Files discovered: {progress.files_scanned:,}"
-            + (f" · Current folder: {folder}" if folder else "")
+        self.activity_panel.status_label.setText(
+            f"Scanning · {progress.backend_label}"
         )
-        self.activity_panel.details_label.setToolTip(progress.current_directory)
+        self.activity_panel.set_details(f"Files discovered: {progress.files_scanned:,}")
+        self.activity_panel.details_label.setToolTip("")
 
     def set_scan_cancelled(self, folder: str, message: str) -> None:
         self.scan_status_label.setText(

@@ -301,7 +301,9 @@ class ExplorerPage(QWidget):
             )
             self.path_label.setText(f"Viewing Saved Scan{timestamp}: {result.display_scope}")
         else:
-            self.path_label.setText(f"Latest completed scan: {result.display_scope}")
+            self.path_label.setText(
+                f"Latest completed scan · {result.scanner_backend}: {result.display_scope}"
+            )
         self.path_label.setToolTip("\n".join(result.scan_roots))
         self.search_feedback_label.clear()
         self.search_feedback_label.hide()
@@ -365,12 +367,11 @@ class ExplorerPage(QWidget):
         self.scan_status_label.show()
 
     def set_scan_progress(self, progress: ScanProgress) -> None:
-        folder = os.path.basename(progress.current_directory.rstrip("\\/")) or progress.current_directory
-        self.activity_panel.set_details(
-            f"Files discovered: {progress.files_scanned:,}"
-            + (f" · Current folder: {folder}" if folder else "")
+        self.activity_panel.status_label.setText(
+            f"Scanning · {progress.backend_label}"
         )
-        self.activity_panel.details_label.setToolTip(progress.current_directory)
+        self.activity_panel.set_details(f"Files discovered: {progress.files_scanned:,}")
+        self.activity_panel.details_label.setToolTip("")
 
     def set_scan_cancelled(self, scope: str, message: str) -> None:
         self.activity_panel.stop()

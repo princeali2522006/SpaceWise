@@ -19,6 +19,7 @@ class ScanProgress:
     files_scanned: int
     elapsed_seconds: float
     current_directory: str = ""
+    backend_label: str = "Standard scan"
 
 
 ProgressCallback = Callable[[ScanProgress], None]
@@ -75,6 +76,7 @@ class ScanResult:
     skipped_files: int = 0
     requested_roots: tuple[str, ...] = ()
     completed_at: str = ""
+    scanner_backend: str = "Standard scan"
 
     @property
     def total_size(self) -> int:
@@ -120,18 +122,6 @@ def _path_key(path: str) -> str:
     return os.path.normcase(os.path.abspath(_display_path(path)))
 
 
-def _is_reparse_point(entry: os.DirEntry[str]) -> bool:
-    junction_check = getattr(entry, "is_junction", None)
-    if junction_check is not None and junction_check():
-        return True
-    try:
-        attributes = entry.stat(follow_symlinks=False).st_file_attributes
-    except AttributeError:
-        return False
-    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    return bool(attributes & reparse_point)
-
-
 def _is_reparse_stat(file_stat: os.stat_result) -> bool:
     reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     return stat.S_ISLNK(file_stat.st_mode) or bool(
@@ -160,6 +150,7 @@ def scan_folders(
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
     strict_roots: bool = False,
+    scanner_backend: str = "Standard scan",
 ) -> ScanResult:
     """Scan one or more roots in a single pass, deduplicating paths and summaries."""
     roots = _normalize_roots(folders)
@@ -236,6 +227,7 @@ def scan_folders(
                     files_scanned=len(files),
                     elapsed_seconds=time.perf_counter() - started,
                     current_directory=last_current_directory,
+                    backend_label=scanner_backend,
                 )
             )
             last_progress_at = now
@@ -285,8 +277,12 @@ def scan_folders(
                     for entry in entries:
                         check_cancelled()
                         try:
-                            if entry.is_symlink() or _is_reparse_point(entry):
-                                entry_stat = entry.stat(follow_symlinks=False)
+                            entry_stat = (
+                                os.stat(entry.path, follow_symlinks=False)
+                                if os.name == "nt"
+                                else entry.stat(follow_symlinks=False)
+                            )
+                            if _is_reparse_stat(entry_stat):
                                 directory_attribute = getattr(
                                     stat,
                                     "FILE_ATTRIBUTE_DIRECTORY",
@@ -301,12 +297,11 @@ def scan_folders(
                                 else:
                                     record_skipped_file(entry.path)
                                 continue
-                            if entry.is_dir(follow_symlinks=False):
-                                entry_stat = (
-                                    os.stat(entry.path, follow_symlinks=False)
-                                    if stay_on_volume
-                                    else entry.stat(follow_symlinks=False)
-                                )
+                            is_directory = stat.S_ISDIR(entry_stat.st_mode) or bool(
+                                getattr(entry_stat, "st_file_attributes", 0)
+                                & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+                            )
+                            if is_directory:
                                 if stay_on_volume and entry_stat.st_dev != root_device:
                                     record_skipped_directory(entry.path)
                                     continue
@@ -319,13 +314,9 @@ def scan_folders(
                                     folders_count.setdefault(folder_key, 0)
                                     folders_name[folder_key] = entry.name
                                 continue
-                            if not entry.is_file(follow_symlinks=False):
+                            if not stat.S_ISREG(entry_stat.st_mode):
                                 continue
-                            file_stat = (
-                                os.stat(entry.path, follow_symlinks=False)
-                                if stay_on_volume or os.name == "nt"
-                                else entry.stat(follow_symlinks=False)
-                            )
+                            file_stat = entry_stat
                             if stay_on_volume and file_stat.st_dev != root_device:
                                 continue
                             file_path = _display_path(entry.path)
@@ -447,6 +438,7 @@ def scan_folders(
         skipped_files=skipped_files,
         requested_roots=roots,
         completed_at=completed_at,
+        scanner_backend=scanner_backend,
     )
 
 

@@ -155,7 +155,11 @@ class ScanModeTests(unittest.TestCase):
         another_folder = self.root / "Documents"
         started = threading.Event()
 
-        def wait_for_cancel(_folders: tuple[str, ...], **options: object) -> None:
+        def wait_for_cancel(
+            _scanner: object,
+            _folders: tuple[str, ...],
+            **options: object,
+        ) -> None:
             assert _folders
             started.set()
             cancel_event = options["cancel_event"]
@@ -163,7 +167,11 @@ class ScanModeTests(unittest.TestCase):
             cancel_event.wait(2)
             raise ScanCancelledError("Scan cancelled. The last completed scan is unchanged.")
 
-        with patch("ui.worker.scan_folders", side_effect=wait_for_cancel):
+        with patch(
+            "core.scanner_backends.RecursiveScanner.scan",
+            autospec=True,
+            side_effect=wait_for_cancel,
+        ):
             window._start_scan(
                 (str(another_folder),),
                 "Selected folder",

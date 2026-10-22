@@ -469,11 +469,9 @@ class ExplorerAndDashboardTests(unittest.TestCase):
                 current_directory=str(location),
             )
         )
-        self.assertIn("Current folder: current", dashboard.progress_label.text())
-        self.assertEqual(
-            dashboard.progress_label.toolTip(),
-            str(location),
-        )
+        self.assertEqual(dashboard.progress_label.text(), "Files discovered: 43")
+        self.assertNotIn("current", dashboard.progress_label.text())
+        self.assertEqual(dashboard.progress_label.toolTip(), "")
         dashboard.set_scanning(False)
 
 

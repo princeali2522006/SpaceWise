@@ -6,7 +6,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.scanner import DriveUsage, ScanCancelledError, ScanProgress, scan_folder, scan_folders
+from core.scanner import (
+    DriveUsage,
+    ScanCancelledError,
+    ScanProgress,
+    _is_reparse_stat,
+    scan_folder,
+    scan_folders,
+)
 
 
 class ScanFolderTests(unittest.TestCase):
@@ -131,10 +138,13 @@ class ScanFolderTests(unittest.TestCase):
             linked_directory = root / "linked-directory"
             linked_directory.mkdir()
             (linked_directory / "hidden.bin").write_bytes(b"hidden")
-            linked_names = {linked_file.name, linked_directory.name}
+            linked_identities = {linked_file.stat().st_ino, linked_directory.stat().st_ino}
             with patch(
-                "core.scanner._is_reparse_point",
-                side_effect=lambda entry: entry.name in linked_names,
+                "core.scanner._is_reparse_stat",
+                side_effect=lambda file_stat: (
+                    file_stat.st_ino in linked_identities
+                    or _is_reparse_stat(file_stat)
+                ),
             ):
                 result = scan_folder(root)
 
@@ -201,6 +211,24 @@ class ScanFolderTests(unittest.TestCase):
         self.assertEqual(len(result.files), 2)
         self.assertEqual(result.total_size, 2 * len(b"same content"))
         self.assertEqual(result.hard_link_paths, 1)
+
+    def test_scan_does_not_change_scanned_file_contents_or_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "read-only-check.txt"
+            source.write_bytes(b"unchanged")
+            contents_before = source.read_bytes()
+            metadata_before = source.stat()
+
+            result = scan_folder(root)
+
+            metadata_after = source.stat()
+            contents_after = source.read_bytes()
+
+        self.assertEqual(result.total_size, len(contents_before))
+        self.assertEqual(contents_after, contents_before)
+        self.assertEqual(metadata_after.st_mtime_ns, metadata_before.st_mtime_ns)
+        self.assertEqual(metadata_after.st_size, metadata_before.st_size)
 
     def test_access_denied_directory_is_reported_and_other_files_are_counted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

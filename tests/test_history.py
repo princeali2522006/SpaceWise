@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from threading import Event
 from pathlib import Path
 from unittest.mock import patch
@@ -53,6 +54,18 @@ class ScanHistoryStoreTests(unittest.TestCase):
         saved = self.store.save_scan(result)
 
         self.assertEqual(self.store.load_scan(saved.scan_id), result)
+
+    def test_scanner_backend_round_trips_through_history(self) -> None:
+        result = replace(
+            scan_folder(self.scan_root),
+            scanner_backend="Standard scan · fast NTFS scan unavailable",
+        )
+
+        saved = self.store.save_scan(result)
+        loaded = self.store.load_scan(saved.scan_id)
+
+        self.assertEqual(saved.scanner_backend, result.scanner_backend)
+        self.assertEqual(loaded.scanner_backend, result.scanner_backend)
 
     def test_failed_file_insert_rolls_back_the_entire_snapshot(self) -> None:
         result = scan_folder(self.scan_root)

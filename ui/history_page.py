@@ -261,7 +261,7 @@ class HistoryPage(QWidget):
 
             metrics = QLabel(
                 f"{record.file_count:,} files · {format_size(record.total_size)} logical size · "
-                f"{record.elapsed_seconds:.1f} sec · "
+                f"{record.elapsed_seconds:.1f} sec · {record.scanner_backend} · "
                 f"Saved {self._format_date(record.saved_at)}"
             )
             metrics.setObjectName("mutedText")
