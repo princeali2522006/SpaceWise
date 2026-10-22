@@ -16,3 +16,14 @@ dist/
 .env
 .env.*
 *.spec
+# Local databases and scan history
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+
+# Logs and temporary files
+*.log
+*.tmp
